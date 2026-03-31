@@ -1,0 +1,17 @@
+{
+  "hosting": {
+    "site": "crmcgill",
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/Costa Rica Trip Hub.html"
+      }
+    ]
+  }
+}
