@@ -19479,7 +19479,7 @@ function renderAccepted() {
                 <td>${escapeHtml(row['Preferred Name'] || '')}</td>
                 <td>${escapeHtml(row['Phone'] || '')}</td>
                 <td class="checkbox-cell" onclick="toggleDocumentAccepted(${idx}, 'Course Reg')">${row['Course Reg'] ? '✓' : '✗'}</td>
-                <td class="checkbox-cell" onclick="toggleDocumentAccepted(${idx}, 'Project')">${row['Project'] ? '✓' : '✗'}</td>
+                <td>${escapeHtml(row['Project'] || 'Not assigned')}</td>
                 <td>${escapeHtml(row['Status'] || '')}</td>
                 <td>${escapeHtml(row['Passport #'] || '')}</td>
                 <td class="checkbox-cell" onclick="toggleDocumentAccepted(${idx}, 'Deposit')">${row['Deposit'] ? '✓' : '✗'}</td>
