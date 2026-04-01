@@ -34564,35 +34564,38 @@ function renderBioCards(filter) {
         });
     }
 
-    // Build bio entries dynamically from DATA.accepted, enriched with STUDENT_BIOS
+    // Use DATA.accepted if available, otherwise fall back to DATA_JSON.accepted
+    const sourceAccepted = (DATA && DATA.accepted && Array.isArray(DATA.accepted) && DATA.accepted.length > 0)
+        ? DATA.accepted
+        : (typeof DATA_JSON !== 'undefined' && DATA_JSON.accepted ? DATA_JSON.accepted : []);
+
+    // Build bio entries dynamically from accepted list, enriched with STUDENT_BIOS
     const allBios = [];
     const usedBioNames = new Set();
-    if (DATA && DATA.accepted && Array.isArray(DATA.accepted)) {
-        DATA.accepted.forEach(row => {
-            const name = (row['Full Name'] || row['Name'] || '').trim();
-            if (!name) return;
-            const bio = findBioByName(name);
-            if (bio) usedBioNames.add(bio.name.toLowerCase());
-            // Project: prefer DATA.accepted, fallback to DATA_JSON by name or email
-            const email = (row['Email'] || '').toLowerCase().trim();
-            const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
-            allBios.push({
-                name: bio ? bio.name : name,
-                degree: bio ? bio.degree : (row['Degree'] || ''),
-                major: bio ? bio.major : (row['Major'] || row['Program'] || ''),
-                role: bio ? bio.role : (row['Role'] || '🌳'),
-                country: bio ? bio.country : (row['Country'] || ''),
-                preference: bio ? bio.preference : '',
-                animal: bio ? bio.animal : '',
-                song: bio ? bio.song : '',
-                sustainabilityInfluence: bio ? bio.sustainabilityInfluence : '',
-                funFact: bio ? bio.funFact : '',
-                photo: bio ? bio.photo : '',
-                spanishLevel: bio ? bio.spanishLevel : '',
-                project: project
-            });
+    sourceAccepted.forEach(row => {
+        const name = (row['Full Name'] || row['Name'] || '').trim();
+        if (!name) return;
+        const bio = findBioByName(name);
+        if (bio) usedBioNames.add(bio.name.toLowerCase());
+        // Project: prefer row data, fallback to DATA_JSON by name or email
+        const email = (row['Email'] || '').toLowerCase().trim();
+        const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
+        allBios.push({
+            name: bio ? bio.name : name,
+            degree: bio ? bio.degree : (row['Degree'] || ''),
+            major: bio ? bio.major : (row['Major'] || row['Program'] || ''),
+            role: bio ? bio.role : (row['Role'] || '🌳'),
+            country: bio ? bio.country : (row['Country'] || ''),
+            preference: bio ? bio.preference : '',
+            animal: bio ? bio.animal : '',
+            song: bio ? bio.song : '',
+            sustainabilityInfluence: bio ? bio.sustainabilityInfluence : '',
+            funFact: bio ? bio.funFact : '',
+            photo: bio ? bio.photo : '',
+            spanishLevel: bio ? bio.spanishLevel : '',
+            project: project
         });
-    }
+    });
     // Add any STUDENT_BIOS entries not matched to DATA.accepted
     STUDENT_BIOS.forEach(bio => {
         if (!usedBioNames.has(bio.name.toLowerCase())) {
