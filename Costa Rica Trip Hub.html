@@ -33689,6 +33689,30 @@ function saveStudentCard() {
 }
 
 // ===== STUDENT BIOS DATA =====
+// Cache of student photos loaded from Firestore (email → base64)
+const _studentPhotoByEmail = {};
+// Cache of student photos loaded from Firestore (lowercase name → base64)
+const _studentPhotoByName = {};
+
+// Load all student profile photos from Firestore into cache, then re-render bio cards
+async function loadStudentPhotosForBios() {
+    if (!firebaseReady || !db) return;
+    try {
+        const snapshot = await db.collection('students').get();
+        let found = false;
+        snapshot.forEach(doc => {
+            const d = doc.data();
+            if (d.photoBase64) {
+                const email = doc.id.toLowerCase();
+                _studentPhotoByEmail[email] = d.photoBase64;
+                if (d.name) _studentPhotoByName[d.name.toLowerCase().trim()] = d.photoBase64;
+                found = true;
+            }
+        });
+        if (found) renderBioCards('');
+    } catch(e) { console.warn('Could not load student photos for bios:', e); }
+}
+
 const STUDENT_BIOS = [
 {name:"Shayda Asgharian",degree:"BA",major:"Political Science and Economics",role:"🌳",spanishLevel:"1",country:"Iran 🇮🇷",preference:"Rainforest",animal:"Spider Monkeys",sustainabilityInfluence:"How to Blow Up a Pipeline by Andreas Malm",song:"Real Sugar",funFact:"I play the Qanun (Middle Eastern version of a harp)",photo:"photos/shayda_asgharian.jpg"},
 {name:"Laila Sawan",degree:"BCom",major:"Strategic Management & Managing for Sustainability, Minor in Urban Studies",role:"🌳",spanishLevel:"1",country:"Qatar 🇶🇦",preference:"Beach",animal:"Toucan",sustainabilityInfluence:"Rio",song:"Oh Que Sera?",funFact:"My favorite flowers are hydrangeas",photo:"photos/laila_sawan.jpg"},
@@ -33974,6 +33998,7 @@ function enterStudentDashboard(email) {
     }, 400);
     loadStudentProfile(email);
     renderBioCards('');
+    loadStudentPhotosForBios();
     renderStudentLogistics();
     listenToStudentProfile(email);
     loadStudentCompletedSteps();
@@ -34632,6 +34657,9 @@ function renderBioCards(filter) {
         // Project: prefer row data, fallback to DATA_JSON by name or email
         const email = (row['Email'] || '').toLowerCase().trim();
         const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
+        // Prefer Firestore-uploaded photo (base64) over static file path
+        const firestorePhoto = _studentPhotoByEmail[email] || _studentPhotoByName[name.toLowerCase().trim()] || '';
+        const bioPhoto = bio ? bio.photo : '';
         allBios.push({
             name: bio ? bio.name : name,
             degree: bio ? bio.degree : (row['Degree'] || ''),
@@ -34643,7 +34671,7 @@ function renderBioCards(filter) {
             song: bio ? bio.song : '',
             sustainabilityInfluence: bio ? bio.sustainabilityInfluence : '',
             funFact: bio ? bio.funFact : '',
-            photo: bio ? bio.photo : '',
+            photo: firestorePhoto || bioPhoto,
             spanishLevel: bio ? bio.spanishLevel : '',
             project: project
         });
@@ -35537,6 +35565,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (isStaffPreview) {
         // Render immediately with DATA_JSON, then Firestore will re-render when ready
         try { renderBioCards(''); } catch(e) {}
+        try { loadStudentPhotosForBios(); } catch(e) {}
         try { renderStudentLogistics(); } catch(e) {}
         // Copy logo
         try { const hLogo = document.getElementById('stuHeroLogo'); if (hLogo && _cachedLogoSrc) { hLogo.src = _cachedLogoSrc; hLogo.style.display = 'block'; } else { const sLogo = document.querySelector('.sidebar-logo img'); if (sLogo && hLogo && sLogo.src) { hLogo.src = sLogo.src; hLogo.style.display = 'block'; } } } catch(e) {}
@@ -35554,6 +35583,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                 currentStudentUser = user;
                 if (user && user.email) loadStudentProfile(user.email);
                 renderBioCards('');
+                loadStudentPhotosForBios();
                 // Listen for real-time changes to student profile (admin edits)
                 listenToStudentProfile(user.email);
             } else {
