@@ -34599,6 +34599,7 @@ function listenToStudentProfile(email) {
 // Project filter state for bio cards
 let _activeBioProjectFilter = null;
 let _bioPhotosLoaded = false;
+let _firestoreStudentData = null; // cached Firestore student profiles for bio cards
 
 function initProjectFilterButtons() {
     const container = document.getElementById('stuProjectFilters');
@@ -34708,20 +34709,22 @@ function renderBioCards(filter) {
         // Project: prefer row data, fallback to DATA_JSON by name or email
         const email = (row['Email'] || '').toLowerCase().trim();
         const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
+        // Firestore student profile overrides (if fetched)
+        const fs = _firestoreStudentData && _firestoreStudentData[email];
         allBios.push({
-            name: bio ? bio.name : name,
+            name: (fs && fs.name) || (bio ? bio.name : name),
             email: email,
-            degree: bio ? bio.degree : (row['Degree'] || ''),
-            major: bio ? bio.major : (row['Major'] || row['Program'] || ''),
+            degree: (fs && fs.degree) || (bio ? bio.degree : (row['Degree'] || '')),
+            major: (fs && fs.major) || (bio ? bio.major : (row['Major'] || row['Program'] || '')),
             role: bio ? bio.role : (row['Role'] || '🌳'),
-            country: bio ? bio.country : (row['Country'] || ''),
-            preference: bio ? bio.preference : '',
-            animal: bio ? bio.animal : '',
-            song: bio ? bio.song : '',
-            sustainabilityInfluence: bio ? bio.sustainabilityInfluence : '',
-            funFact: bio ? bio.funFact : '',
-            photo: bio ? bio.photo : '',
-            spanishLevel: bio ? bio.spanishLevel : '',
+            country: (fs && fs.country) || (bio ? bio.country : (row['Country'] || '')),
+            preference: (fs && fs.preference) || (bio ? bio.preference : ''),
+            animal: (fs && fs.animal) || (bio ? bio.animal : ''),
+            song: (fs && fs.song) || (bio ? bio.song : ''),
+            sustainabilityInfluence: (fs && fs.sustainabilityInfluence) || (bio ? bio.sustainabilityInfluence : ''),
+            funFact: (fs && fs.funFact) || (bio ? bio.funFact : ''),
+            photo: (fs && fs.photoBase64) || (bio ? bio.photo : ''),
+            spanishLevel: (fs && fs.spanishLevel) || (bio ? bio.spanishLevel : ''),
             project: project
         });
     });
@@ -34866,16 +34869,14 @@ function renderBioCards(filter) {
     // Initialize filter buttons if not done
     if (!document.querySelector('.stu-project-filter-btn')) initProjectFilterButtons();
 
-    // Background: fetch Firestore student photos and swap them in (non-blocking)
+    // Background: fetch Firestore student profiles and re-render with updated data (non-blocking)
     if (db && !_bioPhotosLoaded) {
         _bioPhotosLoaded = true;
         db.collection('students').get().then(snapshot => {
-            snapshot.forEach(doc => {
-                const d = doc.data();
-                if (!d.photoBase64) return;
-                const imgs = grid.querySelectorAll('img.stu-bio-card-photo[data-email="' + doc.id + '"]');
-                imgs.forEach(img => { img.src = d.photoBase64; });
-            });
+            _firestoreStudentData = {};
+            snapshot.forEach(doc => { _firestoreStudentData[doc.id] = doc.data(); });
+            // Re-render cards now that Firestore data is cached
+            renderBioCards(filter);
         }).catch(() => {});
     }
 }
