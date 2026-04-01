@@ -26645,7 +26645,11 @@ function listenToStudentProfiles() {
                     ['ID', sd.studentId],
                     ['Food & Allergies', sd.food],
                     ['Health & Accessibility', sd.health],
-                    ['Emergency Contact', sd.emergencyContact]
+                    ['Emergency Contact', sd.emergencyContact],
+                    ['Country', sd.country],
+                    ['Degree', sd.degree],
+                    ['Major', sd.major],
+                    ['Program', sd.major]
                 ];
                 for (const [key, val] of pairs) {
                     if (val !== undefined && val !== null && row[key] !== undefined) {
