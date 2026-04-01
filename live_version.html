@@ -26444,7 +26444,7 @@ let firestoreUnsubscribe = null;
 let firebaseAuth = null;
 let currentStudentUser = null;
 let _studentProfileUnsub = null;
-let _skipNextSnapshot = false; // avoid echo when we just wrote
+let _skipSnapshotCount = 0; // counter to avoid echo when we just wrote (handles overlapping writes)
 
 function initFirebase() {
     try {
@@ -26473,7 +26473,7 @@ function saveToFirestore(changedKey) {
     if (changedKey) _fsDirtyKeys.add(changedKey);
     clearTimeout(_fsWriteTimer);
     _fsWriteTimer = setTimeout(() => {
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         // Build update object with only changed keys (or all if none tracked)
         var writeObj = { updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: 'hub-user' };
         var keysToWrite = _fsDirtyKeys.size > 0 ? Array.from(_fsDirtyKeys) : Object.keys(DATA);
@@ -26490,11 +26490,9 @@ function saveToFirestore(changedKey) {
         _fsDirtyKeys.clear();
         db.collection('hub').doc('data').set(writeObj, { merge: true }).then(() => {
             console.log('Saved to Firestore (' + keysToWrite.join(', ') + ')');
-            _skipNextSnapshot = false;
         }).catch(e => {
             console.error('Firestore write failed:', e);
             showToast('Error saving data to Firestore: ' + (e.message || 'Unknown error'), 'error');
-            _skipNextSnapshot = false;
         });
     }, 800); // debounce 800ms to batch rapid edits
 }
@@ -26504,9 +26502,24 @@ async function loadFromFirestore() {
     if (!firebaseReady || !db) return false;
     try {
         const doc = await db.collection('hub').doc('data').get();
-        if (doc.exists && doc.data().payload) {
-            DATA = JSON.parse(doc.data().payload);
-            console.log('Loaded data from Firestore');
+        if (!doc.exists) return false;
+        var docData = doc.data();
+        // Try field-level keys first (d_interviews, d_accepted, etc.) — current format
+        var usedFieldLevel = false;
+        for (var fk in docData) {
+            if (fk.startsWith('d_') && docData.hasOwnProperty(fk)) {
+                var dataKey = fk.substring(2);
+                try { DATA[dataKey] = JSON.parse(docData[fk]); usedFieldLevel = true; } catch(e) {}
+            }
+        }
+        if (usedFieldLevel) {
+            console.log('Loaded data from Firestore (field-level keys)');
+            return true;
+        }
+        // Fallback to legacy payload field
+        if (docData.payload) {
+            DATA = JSON.parse(docData.payload);
+            console.log('Loaded data from Firestore (legacy payload)');
             return true;
         }
         return false; // no data in Firestore yet
@@ -26524,15 +26537,16 @@ async function loadFromFirestore() {
 function listenToFirestore() {
     if (!firebaseReady || !db) return;
     firestoreUnsubscribe = db.collection('hub').doc('data').onSnapshot(snapshot => {
-        if (_skipNextSnapshot) {
-            _skipNextSnapshot = false;
+        if (_skipSnapshotCount > 0) {
+            _skipSnapshotCount--;
             return; // this was our own write, skip
         }
         if (!snapshot.exists) return;
         var docData = snapshot.data();
         // Don't touch DATA at all while admin is actively editing a cell
         if (_activeEditCell) {
-            _pendingHubPayload = docData.payload || null;
+            // Store the full doc data (field-level) so we can merge when edit completes
+            _pendingHubPayload = docData;
             return;
         }
         // Try field-level merge first (d_interviews, d_accepted, etc.)
@@ -26596,14 +26610,14 @@ function listenToStudentProfiles() {
                     ['Emergency Contact', sd.emergencyContact]
                 ];
                 for (const [key, val] of pairs) {
-                    if (val !== undefined && val !== null && row[key] !== undefined) {
+                    if (val !== undefined && val !== null) {
                         if (row[key] !== val) { row[key] = val; changed = true; }
                     }
                 }
             }
         });
         if (changed && !_activeEditCell) {
-            _skipNextSnapshot = true;
+            _skipSnapshotCount++;
             saveData();
             renderAll();
         }
@@ -27850,7 +27864,7 @@ function updateDecision(idx, newDecision) {
         DATA.waitlistRank = DATA.waitlistRank.filter(e => e !== email);
     }
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderInterviews();
 }
@@ -27877,7 +27891,7 @@ function moveWaitlist(email, direction) {
 
     // Swap
     [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderInterviews();
 }
@@ -27930,7 +27944,7 @@ function updateInterviewField(idx, field, value) {
     
     DATA.interviews[idx][field] = value;
     syncStudentField(DATA.interviews, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderInterviews();
 }
@@ -27944,7 +27958,7 @@ function updateApplicationField(idx, field, value) {
     
     DATA.interviews[idx][field] = value;
     syncStudentField(DATA.interviews, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderApplications();
 }
@@ -28156,7 +28170,7 @@ function deleteAcceptedStudent(idx) {
 
     // Remove from accepted array
     DATA.accepted.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderAccepted();
     updateCounts();
@@ -28193,7 +28207,7 @@ function toggleDocumentAccepted(idx, field) {
         DATA.accepted[idx][keyToUse] = isChecked ? null : 'Yes';
     }
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderAccepted();
 }
@@ -28235,7 +28249,7 @@ function showGroupDropdown(el, idx) {
             const letterKey = Object.keys(DATA.accepted[idx]).find(function(k) { return /^[A-Z]{1,2}$/.test(k) && DATA.accepted[idx][k] === currentProject; });
             if (letterKey) DATA.accepted[idx][letterKey] = group;
             syncStudentField(DATA.accepted[idx]['Email'] || '', 'Project', group);
-            _skipNextSnapshot = true;
+            _skipSnapshotCount++;
             saveData();
             renderAccepted();
             dropdown.remove();
@@ -28252,7 +28266,7 @@ function showGroupDropdown(el, idx) {
     clearItem.onclick = function(e) {
         e.stopPropagation();
         DATA.accepted[idx]['Project'] = '';
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderAccepted();
         dropdown.remove();
@@ -28309,7 +28323,7 @@ function showSpanishDropdown(el, idx) {
             e.stopPropagation();
             DATA.accepted[idx]['Spanish Level'] = level;
             syncAcceptedToFirestore(idx);
-            _skipNextSnapshot = true;
+            _skipSnapshotCount++;
             saveData();
             renderAccepted();
             dropdown.remove();
@@ -28353,7 +28367,7 @@ function updateAcceptedField(idx, field, value) {
 
     DATA.accepted[idx][field] = value;
     syncStudentField(DATA.accepted, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderAccepted();
     // Sync to Firestore student profile
@@ -28454,7 +28468,7 @@ function setBudgetFxRate(currency, rate) {
     if (!DATA._fxRates) DATA._fxRates = { usdToCad: 1.39, crcToCad: 0.0026 };
     if (currency === 'USD') DATA._fxRates.usdToCad = parseFloat(rate) || 1.39;
     if (currency === 'CRC') DATA._fxRates.crcToCad = parseFloat(rate) || 0.0026;
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     recomputeAllCadValues();
     renderBudgetTable();
@@ -28540,7 +28554,7 @@ function saveBudgetEdits() {
             DATA.budget[idx][key] = inp.value || null;
         }
     });
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 }
 
@@ -28559,7 +28573,7 @@ function addBudgetRow() {
 }
 
 function deleteBudgetRow(idx) {
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     if (confirm('Delete this budget row?')) { DATA.budget.splice(idx, 1); saveData(); renderBudgetTable(); showToast('Row deleted', 'success'); }
 }
 
@@ -28966,7 +28980,7 @@ function saveDetailedBudgetEdits() {
             if (colMap[key]) DATA.detailed_budget[idx][colMap[key]] = inp.value || null;
         }
     });
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 }
 
@@ -28980,7 +28994,7 @@ function autoConvertDetailedRow(idx, newCurrency, newAmount) {
     const cad = convertToCAD(amount, cur);
     row['Total paid (in CAD)'] = cad;
     row['G'] = cad;
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 }
 
@@ -28995,7 +29009,7 @@ function addDetailedBudgetRow() {
 }
 
 function deleteDetailedBudgetRow(idx) {
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     if (confirm('Delete this expense line?')) { DATA.detailed_budget.splice(idx, 1); saveData(); renderDetailedBudgetTable(); showToast('Line deleted', 'success'); }
 }
 
@@ -29180,7 +29194,7 @@ function savePaymentsEdits() {
             }
         }
     });
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 }
 
@@ -29206,7 +29220,7 @@ function addPaymentRow() {
 }
 
 function deletePaymentRow(idx) {
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     if (confirm('Delete this payment row?')) { DATA.payments.splice(idx, 1); saveData(); renderPaymentsTable(); showToast('Payment deleted', 'success'); }
 }
 
@@ -29239,7 +29253,7 @@ function cyclePaymentStatus(realIdx) {
     if (next.toLowerCase() === 'payed') { row['P'] = 'Yes'; }
     else if (next === 'partially') { row['P'] = 'partially'; }
     else { row['P'] = 'No'; }
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderPaymentsTable();
 }
@@ -29538,7 +29552,7 @@ function addSlothyPoints(studentName, amount) {
     const newAmount = current + amount;
     student['Funds'] = String(newAmount.toFixed(1));
     student['C'] = student['Funds'];
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderSlothyTable();
 }
@@ -29559,7 +29573,7 @@ function addGroupPoints(groupName, amount) {
             s['C'] = s['Funds'];
         }
     });
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderSlothyTable();
 }
@@ -29595,7 +29609,7 @@ function applySlothyBulkFunds() {
         }
     });
     if (changed) {
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         showToast('Funds updated!', 'success');
     }
@@ -29946,7 +29960,7 @@ function saveMeal(index) {
     meal['Notes'] = notes || null;
     meal['G'] = notes || null;
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     showToast('Meal updated');
     mealEditingIndex = -1;
@@ -29960,7 +29974,7 @@ function deleteMeal(index) {
     if (!confirm('Remove this meal? This action cannot be undone.')) return;
 
     data.splice(index, 1);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     showToast('Meal deleted');
     mealEditingIndex = -1;
@@ -30072,7 +30086,7 @@ function confirmAddMeal() {
     };
 
     data.push(newMeal);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     showToast('Meal added');
     cancelAddMealModal();
@@ -30126,7 +30140,7 @@ function recalcTshirtFromMultiplier() {
         grandTotal += colTotal;
     });
     prodTotal['I'] = String(grandTotal);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderTshirtTable();
 }
@@ -30169,7 +30183,7 @@ function applyTshirtProdEdits() {
         grandTotal += colTotal;
     });
     prodTotal['I'] = String(grandTotal);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     tshirtProdEditMode = false;
     renderTshirtTable();
@@ -30956,7 +30970,7 @@ function saveContact() {
         showToast('Contact added', 'success');
     }
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     closeContactModal();
     renderContacts();
@@ -30982,7 +30996,7 @@ function deleteContact() {
     }
     
     DATA.logistics_overview.contacts.splice(window._editingContactIdx, 1);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     closeContactModal();
     renderContacts();
@@ -31064,7 +31078,7 @@ function toggleLogisticsStatus(element, date, eventIdx) {
         const eventInList = logistics.schedule.find(e => e === events[eventIdx]);
         if (!eventInList) return;
         eventInList.status = newStatus;
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderLogisticsOverview();
     }
@@ -31086,7 +31100,7 @@ function updateLogisticsStatus(date, eventIdx, newStatus) {
         const eventInList = logistics.schedule.find(e => e === events[eventIdx]);
         if (!eventInList) return;
         eventInList.status = newStatus;
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderLogisticsOverview();
     }
@@ -31460,7 +31474,7 @@ function saveLogisticsEvent() {
     }
 
     closeLogisticsModal();
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31487,7 +31501,7 @@ function deleteLogisticsEvent() {
     }
 
     closeLogisticsModal();
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31713,7 +31727,7 @@ function duplicateEventToDays() {
     });
 
     showToast(`Event copied to ${duplicatedCount} day(s)`, 'success');
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31723,7 +31737,7 @@ function updateTripDates() {
     if (!DATA.logistics_overview) DATA.logistics_overview = { schedule: [], contacts: [] };
     if (startVal) DATA.logistics_overview._tripStart = startVal;
     if (endVal) DATA.logistics_overview._tripEnd = endVal;
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     showToast('Trip dates updated', 'success');
 }
@@ -31734,7 +31748,7 @@ function saveLogisticsStudentNote() {
     _stuNoteTimer = setTimeout(() => {
         if (!DATA.logistics_overview) DATA.logistics_overview = { schedule: [], contacts: [] };
         DATA.logistics_overview.studentNote = (document.getElementById('logisticsStudentNote') || {}).value || '';
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         showToast('Student note saved', 'success');
     }, 800);
@@ -31753,7 +31767,7 @@ function saveDayNote(date, value) {
     if (!date) { showToast('Invalid date', 'error'); return; }
     const trimmedValue = value ? value.trim() : '';
     DATA.logistics_overview.dayNotes[date] = trimmedValue;
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     showToast('Day note saved', 'success');
 }
@@ -32004,7 +32018,7 @@ function markAllTasksDone() {
         }
     });
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderTasks();
 }
@@ -32032,7 +32046,7 @@ function clearCompletedTasks() {
         DATA.docs_tasks.splice(t._origIdx, 1);
     });
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderTasks();
 }
@@ -32286,7 +32300,7 @@ function cycleTaskStatus(idx) {
         const cycle = { 'Not started': 'In progress', 'In progress': 'Completed', 'Completed': 'Not started' };
         d['C'] = cycle[d['C']] || 'In progress';
     }
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderTasks();
 }
@@ -32340,7 +32354,7 @@ function saveDocument() {
         DATA.docs_tasks.unshift(newDoc);
         showToast('Document added', 'success');
     }
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     document.getElementById('docModal').style.display = 'none';
     renderDocuments();
@@ -32352,7 +32366,7 @@ function deleteDocument(idx) {
         return;
     }
     DATA.docs_tasks.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderDocuments();
     showToast('Document deleted', 'success');
@@ -32439,7 +32453,7 @@ function saveTask() {
         'GHIJKLMNOPQRSTUVWXYZ'.split('').forEach(c => newTask[c] = null);
         DATA.docs_tasks.push(newTask);
     }
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     document.getElementById('taskModal').style.display = 'none';
     renderTasks();
@@ -32454,7 +32468,7 @@ function deleteTask(idx) {
 
     if (!confirm('Delete this task?')) return;
     DATA.docs_tasks.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderTasks();
 }
@@ -32570,7 +32584,7 @@ function makeEditable(element, idx, field, dataArray) {
         syncStudentField(isAccepted ? DATA.accepted : dataArray, idx, field, newValue);
 
         // Skip the next hub/data snapshot triggered by our own saveData()
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
 
         // NOW release the edit guard after all syncs are initiated
@@ -32579,11 +32593,20 @@ function makeEditable(element, idx, field, dataArray) {
         // Apply any deferred hub/data payload that arrived while editing
         // but merge our edit into it so it's not lost
         if (_pendingHubPayload) {
-            const pending = JSON.parse(_pendingHubPayload);
-            if (isAccepted && pending.accepted && pending.accepted[idx]) {
-                pending.accepted[idx][field] = newValue;
+            var docData = _pendingHubPayload;
+            // Merge field-level keys from the deferred snapshot
+            for (var fk in docData) {
+                if (fk.startsWith('d_') && docData.hasOwnProperty(fk)) {
+                    var dataKey = fk.substring(2);
+                    try { DATA[dataKey] = JSON.parse(docData[fk]); } catch(e) {}
+                }
             }
-            DATA = pending;
+            // Re-apply our edit on top (match by email to handle index drift)
+            if (isAccepted && DATA.accepted) {
+                var editEmail = (DATA.accepted[idx] && DATA.accepted[idx]['Email'] || '').toLowerCase();
+                var targetRow = editEmail ? DATA.accepted.find(function(r) { return (r['Email'] || '').toLowerCase() === editEmail; }) : DATA.accepted[idx];
+                if (targetRow) targetRow[field] = newValue;
+            }
             _pendingHubPayload = null;
             migrateDataFields();
         }
@@ -32650,7 +32673,7 @@ function makeEditableEmail(element, idx, field, dataArray) {
             });
         });
         if (isAccepted) syncAcceptedToFirestore(idx);
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         _activeEditCell = null;
         if (_pendingHubPayload) { _pendingHubPayload = null; }
@@ -32846,7 +32869,7 @@ function addApplicant() {
         'Deadline for decision': ''
     });
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     updateCounts();
     closeModal();
@@ -32859,7 +32882,7 @@ function addApplicant() {
 }
 
 function toggleTask(checkbox) {
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 }
 
@@ -32879,7 +32902,7 @@ function resetData() {
     if (confirm('Reset all data to original? This cannot be undone.')) {
         DATA = JSON.parse(JSON.stringify(DATA_JSON));
         localStorage.removeItem('crTrip_v11');
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         updateCounts();
         renderAccepted();
@@ -33156,7 +33179,7 @@ function submitAddRoom() {
     newEntry[hotelMap['volcan']] = window.activeHotelTab === 'volcan' ? roomName : '';
     newEntry['Notes'] = null;
     DATA.rooms.push(newEntry);
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderRooms();
     closeAddRoomModal();
@@ -33287,7 +33310,7 @@ function submitAddPerson() {
         DATA.rooms.push(newEntry);
     }
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
     renderRooms();
     closeAddPersonModal();
@@ -33326,7 +33349,7 @@ function reassignStudent(studentName, newRoom) {
     const row = rooms.find(r => (r['Name'] || '') === studentName);
     if (row) {
         row[hotelField] = newRoom;
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderRooms();
         showToast(studentName + ' moved to ' + newRoom, 'success');
@@ -33347,7 +33370,7 @@ function removePersonFromRoom(studentName) {
     const row = rooms.find(r => (r['Name'] || '') === studentName);
     if (row) {
         row[hotelField] = '';
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderRooms();
         showToast(studentName + ' removed from room', 'success');
@@ -33617,7 +33640,7 @@ function saveStudentCard() {
         DATA.accepted[idx][actualKey] = currentStudentData[key];
     });
 
-    _skipNextSnapshot = true;
+    _skipSnapshotCount++;
     saveData();
 
     // Sync admin edits to Firestore student profile (merge: true preserves student's own edits)
@@ -35670,7 +35693,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const maxOrder = DATA.nextSteps.reduce((m, s) => Math.max(m, s.order || 0), 0);
             DATA.nextSteps.push({ id: maxId + 1, title, deadline, description, steps, links, order: maxOrder + 1 });
         }
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderNextSteps();
         const modal = document.getElementById('nextStepModal');
@@ -35697,7 +35720,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         const tempOrder = steps[idx].order;
         steps[idx].order = steps[swapIdx].order;
         steps[swapIdx].order = tempOrder;
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderNextSteps();
     }
@@ -35808,7 +35831,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const maxOrder = DATA.faq.reduce((m, f) => Math.max(m, f.order || 0), 0);
             DATA.faq.push({ id: maxId + 1, question, answer, category, order: maxOrder + 1 });
         }
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderFaqAdmin();
         const modal = document.getElementById('faqModal');
@@ -35821,7 +35844,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     function deleteFaq(id) {
         if (!confirm('Delete this FAQ?')) return;
         DATA.faq = (DATA.faq || []).filter(f => f.id !== id);
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderFaqAdmin();
         showToast('FAQ deleted', 'info');
@@ -35932,7 +35955,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     function addStaffMember() {
         if (!DATA.staff) DATA.staff = [];
         DATA.staff.push({ 'Full Name': 'New Staff', 'Email': '', 'Role': 'TA', 'Country': '', 'Passport': '', 'DoB': '', 'Emergency Contact': '', 'Emergency Phone': '' });
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderStaff();
         showToast('Staff member added — click to edit name and role', 'success');
@@ -35943,7 +35966,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (!staff[idx]) return;
         if (!confirm('Remove ' + (staff[idx]['Full Name'] || 'this staff member') + '?')) return;
         staff.splice(idx, 1);
-        _skipNextSnapshot = true;
+        _skipSnapshotCount++;
         saveData();
         renderStaff();
         showToast('Staff member removed', 'info');
@@ -35986,7 +36009,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                         e.stopPropagation();
                         optionClicked = true;
                         DATA.staff[idx][field] = c;
-                        _skipNextSnapshot = true;
+                        _skipSnapshotCount++;
                         saveData();
                         renderStaff();
                     };
@@ -36011,7 +36034,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                     } else {
                         DATA.staff[idx][field] = searchInput.value;
                     }
-                    _skipNextSnapshot = true;
+                    _skipSnapshotCount++;
                     saveData();
                     renderStaff();
                 }
@@ -36022,7 +36045,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                 if (optionClicked) return;
                 blurTimeout = setTimeout(() => {
                     DATA.staff[idx][field] = searchInput.value;
-                    _skipNextSnapshot = true;
+                    _skipSnapshotCount++;
                     saveData();
                     renderStaff();
                 }, 200);
@@ -36062,7 +36085,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         input.onblur = () => {
             const newValue = input.value;
             DATA.staff[idx][field] = newValue;
-            _skipNextSnapshot = true;
+            _skipSnapshotCount++;
             saveData();
             renderStaff();
         };
@@ -36203,7 +36226,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                 staff[_staffPhotoIdx]['PhotoRaw'] = _staffPhotoRaw;
                 staff[_staffPhotoIdx]['PhotoPosY'] = posY;
             }
-            _skipNextSnapshot = true;
+            _skipSnapshotCount++;
             saveData();
             renderStaff();
 
