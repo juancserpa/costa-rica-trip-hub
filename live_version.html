@@ -33787,6 +33787,7 @@ function ensureFirebaseAuth() {
         if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
         if (!db) db = firebase.firestore();
         firebaseAuth = firebase.auth();
+        firebaseReady = true;
     }
 }
 
