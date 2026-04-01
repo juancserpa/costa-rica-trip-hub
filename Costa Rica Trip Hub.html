@@ -33527,7 +33527,33 @@ function renderStudentCard(student) {
 
     document.getElementById('studentCardName').textContent = escapeHtml(student['Full Name'] || 'Student Profile');
 
+    // Load student photo from Firestore
+    const stuEmail = (student['Email'] || '').toLowerCase().trim();
+    let _adminPhotoBase64 = '';
+    if (db && stuEmail) {
+        db.collection('students').doc(stuEmail).get().then(snap => {
+            if (snap.exists && snap.data().photoBase64) {
+                const img = document.getElementById('adminStuCardPhoto');
+                if (img) { img.src = snap.data().photoBase64; img.style.display = ''; }
+                const ph = document.getElementById('adminStuCardPhotoPlaceholder');
+                if (ph) ph.style.display = 'none';
+            }
+        }).catch(() => {});
+    }
+
     let body = `
+        <div class="student-card-section" style="display:flex;align-items:center;gap:16px;padding:16px;">
+            <div style="position:relative;flex-shrink:0;">
+                <img id="adminStuCardPhoto" src="" style="width:80px;height:80px;border-radius:50%;object-fit:cover;background:#1a4560;display:none;border:2px solid #a8e06c;">
+                <div id="adminStuCardPhotoPlaceholder" style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#214e67,#1a4560);display:flex;align-items:center;justify-content:center;font-size:2rem;color:#a8e06c;border:2px solid #a8e06c;">👤</div>
+            </div>
+            <div style="flex:1;">
+                <div style="font-weight:700;font-size:1.1rem;">${escapeHtml(student['Full Name'] || '')}</div>
+                <div style="color:#888;font-size:.85rem;">${escapeHtml(student['Email'] || '')}</div>
+                <button onclick="adminUploadStudentPhoto('${escapeHtml(stuEmail)}')" style="margin-top:6px;padding:4px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-size:.75rem;font-weight:600;cursor:pointer;">📷 Upload Photo</button>
+            </div>
+        </div>
+
         <div class="student-card-section">
             <div class="student-card-section-title">Contact Info</div>
             ${renderStudentCardField('Full Name', student['Full Name'] || '', 'text')}
@@ -33640,6 +33666,55 @@ function updateStudentCardField(label, value) {
     // Map label to field name
     const fieldName = label === 'Phone Number' ? 'Phone Number' : label;
     currentStudentData[fieldName] = value;
+}
+
+function adminUploadStudentPhoto(email) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            const rawBase64 = ev.target.result;
+            // Crop to 300x300 square
+            const img = new Image();
+            img.onload = async () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 300; canvas.height = 300;
+                const ctx = canvas.getContext('2d');
+                const size = Math.min(img.width, img.height);
+                const sx = (img.width - size) / 2;
+                const sy = (img.height - size) / 2;
+                ctx.drawImage(img, sx, sy, size, size, 0, 0, 300, 300);
+                const base64 = canvas.toDataURL('image/jpeg', 0.8);
+                // Save to Firestore student doc
+                if (db && email) {
+                    try {
+                        await db.collection('students').doc(email).set({
+                            photoBase64: base64,
+                            photoRaw: rawBase64.length < 500000 ? rawBase64 : '',
+                            photoPosY: 50,
+                            updatedAt: new Date().toISOString()
+                        }, { merge: true });
+                        // Update card preview
+                        const photoEl = document.getElementById('adminStuCardPhoto');
+                        if (photoEl) { photoEl.src = base64; photoEl.style.display = ''; }
+                        const ph = document.getElementById('adminStuCardPhotoPlaceholder');
+                        if (ph) ph.style.display = 'none';
+                        showToast('Photo uploaded', 'success');
+                    } catch (err) {
+                        console.error('Admin photo upload error:', err);
+                        showToast('Photo upload failed', 'error');
+                    }
+                }
+            };
+            img.src = rawBase64;
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
 }
 
 function saveStudentCard() {
