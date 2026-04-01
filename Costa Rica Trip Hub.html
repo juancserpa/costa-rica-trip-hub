@@ -34598,6 +34598,7 @@ function listenToStudentProfile(email) {
 
 // Project filter state for bio cards
 let _activeBioProjectFilter = null;
+let _bioPhotosLoaded = false;
 
 function initProjectFilterButtons() {
     const container = document.getElementById('stuProjectFilters');
@@ -34709,6 +34710,7 @@ function renderBioCards(filter) {
         const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
         allBios.push({
             name: bio ? bio.name : name,
+            email: email,
             degree: bio ? bio.degree : (row['Degree'] || ''),
             major: bio ? bio.major : (row['Major'] || row['Program'] || ''),
             role: bio ? bio.role : (row['Role'] || '🌳'),
@@ -34757,11 +34759,12 @@ function renderBioCards(filter) {
     function renderCard(b) {
         const flagMatches = (b.country || '').match(/[\u{1F1E0}-\u{1F1FF}]{2}/gu) || [];
         const photoUrl = b.photo || '';
+        const emailAttr = b.email ? ` data-email="${escapeHtml(b.email)}"` : '';
         const pGroup = matchProjectGroup(b.project);
         const projectBadge = pGroup ? `<div class="stu-bio-card-project" style="background:${pGroup.bg};border:1.5px solid ${pGroup.border};">${getGroupLogo(pGroup.logoName, 20)}</div>` : '';
         const photoHtml = photoUrl
-            ? `<div class="stu-bio-card-photo-wrap">${projectBadge}<img class="stu-bio-card-photo" src="${photoUrl}" alt="${escapeHtml(b.name)}" onerror="this.parentElement.innerHTML='<div style=\\'width:100%;height:100%;background:linear-gradient(135deg,#214e67,#2d6a8f);display:flex;align-items:center;justify-content:center;font-size:3rem;color:#a8e06c;\\'>${b.role || '🌳'}</div>'"></div>`
-            : `<div class="stu-bio-card-photo-wrap">${projectBadge}<div style="position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(135deg,#214e67,#2d6a8f);display:flex;align-items:center;justify-content:center;font-size:3.5rem;color:#a8e06c;">${b.role || '🌳'}</div></div>`;
+            ? `<div class="stu-bio-card-photo-wrap">${projectBadge}<img class="stu-bio-card-photo"${emailAttr} src="${photoUrl}" alt="${escapeHtml(b.name)}" onerror="this.parentElement.innerHTML='<div style=\\'width:100%;height:100%;background:linear-gradient(135deg,#214e67,#2d6a8f);display:flex;align-items:center;justify-content:center;font-size:3rem;color:#a8e06c;\\'>${b.role || '🌳'}</div>'"></div>`
+            : `<div class="stu-bio-card-photo-wrap">${projectBadge}<div style="position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(135deg,#214e67,#2d6a8f);display:flex;align-items:center;justify-content:center;font-size:3.5rem;color:#a8e06c;"${emailAttr}>${b.role || '🌳'}</div></div>`;
         const subtitle = (b.degree && b.major) ? `${escapeHtml(b.degree)} · ${escapeHtml(b.major)}` : (escapeHtml(b.degree) || escapeHtml(b.major) || '');
 
         // Parse country names: split "USA/Canada 🇺🇲🇨🇦" or "Canada & Romania 🇷🇴🇨🇦" into individual country chips
@@ -34862,6 +34865,19 @@ function renderBioCards(filter) {
     grid.innerHTML = staffHtml + html || '<p style="text-align:center;color:#888;grid-column:1/-1;">No students match your search.</p>';
     // Initialize filter buttons if not done
     if (!document.querySelector('.stu-project-filter-btn')) initProjectFilterButtons();
+
+    // Background: fetch Firestore student photos and swap them in (non-blocking)
+    if (db && !_bioPhotosLoaded) {
+        _bioPhotosLoaded = true;
+        db.collection('students').get().then(snapshot => {
+            snapshot.forEach(doc => {
+                const d = doc.data();
+                if (!d.photoBase64) return;
+                const imgs = grid.querySelectorAll('img.stu-bio-card-photo[data-email="' + doc.id + '"]');
+                imgs.forEach(img => { img.src = d.photoBase64; });
+            });
+        }).catch(() => {});
+    }
 }
 
 // Student section switching
