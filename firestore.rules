@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// Costa Rica Trip Hub — Firestore security rules
+//
+// Threat model:
+//   • Internet anonymous users: NO read/write access at all.
+//   • Authenticated students: read hub/* and students/{email}; write ONLY their own profile.
+//   • Staff (hardcoded allowlist below): full read/write across hub + students.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isStaff() {
+      return isSignedIn() && request.auth.token.email in [
+        'juan@mcgill.ca'
+      ];
+    }
+    function isOwner(email) {
+      return isSignedIn() && request.auth.token.email == email;
+    }
+
+    match /hub/{document=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaff();
+    }
+
+    match /students/{email} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(email) || isStaff();
+    }
+
+    // Audit log: every successful save writes a small entry (who/when/what).
+    // Entries are append-only; only staff read them.
+    match /audit/{doc} {
+      allow read: if isStaff();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

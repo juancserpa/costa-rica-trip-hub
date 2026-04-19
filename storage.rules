@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Firebase Storage bucket is configured in the Firebase project but not yet used
+// by the app (photos are stored as base64 data URLs inside Firestore docs). Lock
+// the bucket closed so no anonymous uploads/downloads are possible.
+//
+// When we migrate photos to Storage (to reduce Firestore doc size), add a specific
+// match for that path — e.g.:
+//   match /staff_photos/{email}.jpg { allow read: if request.auth != null; ... }
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+.firebase/
+.DS_Store
+
+# Local backups (the GitHub Action uploads them as artifacts instead of committing)
+backups/

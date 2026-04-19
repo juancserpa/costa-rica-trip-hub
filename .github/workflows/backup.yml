@@ -1,0 +1,33 @@
+name: Firestore daily backup
+
+on:
+  schedule:
+    - cron: '0 5 * * *'      # 05:00 UTC every day (≈ 01:00 America/Toronto)
+  workflow_dispatch:          # also allow manual "Run workflow"
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run backup script
+        run: node scripts/backup.js
+        env:
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || 'juan@mcgill.ca' }}
+
+      # Artifact retention is 90 days by default on the free plan.
+      # If the app ever has a corruption event you have 90 daily rollback points.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firestore-backup-${{ github.run_id }}
+          path: backups/
+          retention-days: 90
+          if-no-files-found: error

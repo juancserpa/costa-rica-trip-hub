@@ -1,4 +1,10 @@
 {
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
   "hosting": {
     "site": "crmcgill",
     "public": ".",
@@ -9,8 +15,20 @@
     ],
     "rewrites": [
       {
-        "source": "**",
+        "source": "/admin",
         "destination": "/Costa Rica Trip Hub.html"
+      },
+      {
+        "source": "/admin/**",
+        "destination": "/Costa Rica Trip Hub.html"
+      },
+      {
+        "source": "/staff",
+        "destination": "/Costa Rica Trip Hub.html"
+      },
+      {
+        "source": "**",
+        "destination": "/student.html"
       }
     ]
   }

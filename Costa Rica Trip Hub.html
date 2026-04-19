@@ -5761,6 +5761,9 @@
                     <input id="loginPassword" type="password" placeholder="Password" autocomplete="new-password" onkeydown="if(event.key==='Enter')attemptLogin()" style="width:100%;padding:14px 48px 14px 20px;border:2px solid rgba(255,255,255,0.2);border-radius:12px;background:rgba(255,255,255,0.1);color:white;font-size:15px;outline:none;box-sizing:border-box;backdrop-filter:blur(10px);transition:border-color 0.3s;" onfocus="this.style.borderColor='#a3e635'" onblur="this.style.borderColor='rgba(255,255,255,0.2)'">
                     <button onclick="attemptLogin()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:#a3e635;border:none;border-radius:8px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#063a44;font-weight:bold;">→</button>
                 </div>
+                <div style="margin-top:10px;text-align:center;">
+                    <span onclick="staffForgotPassword()" style="color:rgba(255,255,255,0.6);font-size:.78rem;cursor:pointer;text-decoration:underline;">Forgot password?</span>
+                </div>
                 <span class="back-to-student" onclick="switchLoginMode('student')">← Back to student login</span>
             </div>
             <!-- Student login -->
@@ -10896,8 +10899,8 @@ const DATA_JSON ={
   {
    "Index": "9.0",
    "A": "9.0",
-   "Full Name": "Isabella Jimenez",
-   "B": "Isabella Jimenez",
+   "Full Name": "Mia Jimenez",
+   "B": "Mia Jimenez",
    "Student ID": "261196530",
    "C": "261196530.0",
    "Email": "isabella.jimenez@mail.mcgill.ca",
@@ -12051,8 +12054,8 @@ const DATA_JSON ={
    "B": "Leanne Audet",
    "Student ID": "123456",
    "C": "123456",
-   "Email": null,
-   "D": null,
+   "Email": "leanneaudet58@gmail.com",
+   "D": "leanneaudet58@gmail.com",
    "Preferred Name": null,
    "E": null,
    "Phone Number": null,
@@ -13206,8 +13209,8 @@ const DATA_JSON ={
   {
    "Index": "9.0",
    "A": "9.0",
-   "Full Name": "Isabella Jimenez",
-   "B": "Isabella Jimenez",
+   "Full Name": "Mia Jimenez",
+   "B": "Mia Jimenez",
    "Liability Waivers": "https://drive.google.com/file/d/1tP9p3tPT1YolTZYjHMbiNsiDzxplEyTx/view",
    "C": "https://drive.google.com/file/d/1tP9p3tPT1YolTZYjHMbiNsiDzxplEyTx/view"
   },
@@ -14198,8 +14201,8 @@ const DATA_JSON ={
    "Z": null
   },
   {
-   "Name": "Isabella Jimenez",
-   "A": "Isabella Jimenez",
+   "Name": "Mia Jimenez",
+   "A": "Mia Jimenez",
    "Passport #": "A35337874",
    "B": "A35337874",
    "Wyndham Tamarindo": "Triple room 1",
@@ -26430,13 +26433,108 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 let sortState = {};
 
+// ===== NAME / EMAIL NORMALIZATION (shared) =====
+// CRITICAL: all cross-table lookups (rooms, slothy, waivers, accepted, students/{email})
+// MUST go through these helpers. Otherwise an entry like "Léanne Audet" in one table
+// won't match "Leanne Audet" in another and the same person shows up as two entities.
+const NAME_ALIASES = {
+    'isabella jimenez': 'mia jimenez',
+    'victoire damasse leytes': 'victoire leytes',
+    'sunsunee bell': 'sunny bell',
+    'jacqueline wood': 'jackie wood',
+    'léanne audet': 'leanne audet',
+    'kea anderson': 'kéa anderson'
+};
+function stripDiacritics(s) {
+    return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+// Canonical match key. normalizeName(a) === normalizeName(b) ⇔ same person.
+function normalizeName(name) {
+    if (!name) return '';
+    const n = String(name).trim().toLowerCase();
+    if (NAME_ALIASES[n]) return NAME_ALIASES[n];
+    const stripped = stripDiacritics(n);
+    if (stripped !== n && NAME_ALIASES[stripped]) return NAME_ALIASES[stripped];
+    return n;
+}
+function normalizeEmail(email) {
+    return (email || '').toString().trim().toLowerCase();
+}
+function namesEqual(a, b) {
+    const na = normalizeName(a);
+    return !!na && na === normalizeName(b);
+}
+function emailsEqual(a, b) {
+    const na = normalizeEmail(a);
+    return !!na && na === normalizeEmail(b);
+}
+// Find a row in arr by name. Tries common name fields ('Name', 'Full Name').
+function findByName(arr, name, nameField) {
+    if (!Array.isArray(arr)) return null;
+    const target = normalizeName(name);
+    if (!target) return null;
+    return arr.find(r => {
+        if (!r) return false;
+        const candidate = nameField ? r[nameField] : (r['Name'] || r['Full Name'] || r['name']);
+        return normalizeName(candidate) === target;
+    }) || null;
+}
+function findByEmail(arr, email) {
+    if (!Array.isArray(arr)) return null;
+    const target = normalizeEmail(email);
+    if (!target) return null;
+    return arr.find(r => r && emailsEqual(r['Email'] || r['email'], target)) || null;
+}
+// Quick integrity check — call after data loads. Logs (does not throw).
+function auditDataIntegrity() {
+    if (!DATA || !Array.isArray(DATA.accepted)) return [];
+    const issues = [];
+    const accepted = DATA.accepted;
+    const acceptedNameKeys = new Set();
+    const seenAcc = new Set();
+    accepted.forEach(s => {
+        const k = normalizeName(s && s['Full Name']);
+        if (!k) return;
+        if (seenAcc.has(k)) issues.push(`DUP accepted: "${s['Full Name']}"`);
+        seenAcc.add(k);
+        acceptedNameKeys.add(k);
+    });
+    const staffKeys = new Set((DATA.staff || []).map(s => normalizeName(s && s['Full Name'])).filter(Boolean));
+    const known = new Set([...acceptedNameKeys, ...staffKeys]);
+    [['rooms','Name'], ['groups','Full Name'], ['waivers','Full Name'], ['slothy','Name']].forEach(([table, field]) => {
+        const arr = DATA[table];
+        if (!Array.isArray(arr)) return;
+        const keys = new Set(arr.map(r => normalizeName(r && (r[field] || r['Name'] || r['Full Name']))).filter(Boolean));
+        accepted.forEach(s => {
+            const k = normalizeName(s && s['Full Name']);
+            if (k && !keys.has(k)) issues.push(`Missing from ${table}: "${s['Full Name']}"`);
+        });
+        arr.forEach(r => {
+            const rk = normalizeName(r && (r[field] || r['Name'] || r['Full Name']));
+            if (rk && !known.has(rk)) issues.push(`Orphan in ${table}: "${r[field] || r['Name'] || r['Full Name']}" not in accepted/staff`);
+        });
+    });
+    if (issues.length) console.warn(`[Data Integrity] ${issues.length} issue(s):\n  ` + issues.join('\n  '));
+    else console.log('[Data Integrity] All clear');
+    return issues;
+}
+
 // Migrate fields from embedded DATA_JSON into DATA.accepted
 // Called on initial load AND after every Firestore hub/data update
-function migrateDataFields() {
+// skipLetterMigration: when true, skip letter→named field migration (Firestore data is authoritative)
+function migrateDataFields(skipLetterMigration) {
     if (!DATA.accepted || typeof DATA_JSON === 'undefined' || !DATA_JSON.accepted) return;
     const freshByName = {};
     DATA_JSON.accepted.forEach(s => { if (s['Full Name']) freshByName[s['Full Name'].toLowerCase()] = s; });
     const fieldsToMigrate = ['Food & Allergies', 'Health & Accessibility', 'Emergency Contact', 'Project', 'Spanish Level'];
+    // Map letter columns → named document fields (from original Sheets import)
+    const letterToField = {
+        'M': 'Deposit Payment',
+        'N': 'Pre-departure registation',
+        'O': 'Pre-departure certificate',
+        'P': 'Travel Registry App',
+        'Q': 'Liability Waiver'
+    };
     DATA.accepted.forEach(s => {
         const fresh = freshByName[(s['Full Name'] || '').toLowerCase()];
         if (fresh) {
@@ -26447,6 +26545,15 @@ function migrateDataFields() {
                     s[f] = fresh[f];
                 }
             });
+        }
+        // Migrate letter columns → named fields ONLY when data is from DATA_JSON (not Firestore)
+        // Firestore named fields are authoritative — user edits should not be overwritten by stale letter columns
+        if (!skipLetterMigration) {
+            for (const [letter, field] of Object.entries(letterToField)) {
+                if ((s[field] === null || s[field] === undefined || s[field] === '') && s[letter] && s[letter] !== '') {
+                    s[field] = s[letter];
+                }
+            }
         }
     });
     // Also migrate nextSteps, faq, logistics_overview
@@ -26466,7 +26573,7 @@ function migrateDataFields() {
     if (DATA.staff && DATA_JSON.staff) {
         const staffFields = ['Passport', 'DOB', 'Emergency Contact', 'Emergency Phone', 'Full Name', 'PhotoFile'];
         DATA_JSON.staff.forEach(src => {
-            const match = DATA.staff.find(s => (s['Email'] || '').toLowerCase() === (src['Email'] || '').toLowerCase());
+            const match = findByEmail(DATA.staff, src['Email']);
             if (match) {
                 staffFields.forEach(f => {
                     if ((!match[f] || match[f] === '') && src[f] && src[f] !== '') {
@@ -26496,7 +26603,7 @@ let firestoreUnsubscribe = null;
 let firebaseAuth = null;
 let currentStudentUser = null;
 let _studentProfileUnsub = null;
-let _skipNextSnapshot = false; // avoid echo when we just wrote
+let _skipNextSnapshot = 0; // counter: skip N upcoming hub snapshots (avoids echo when we write)
 
 function initFirebase() {
     try {
@@ -26517,6 +26624,80 @@ function initFirebase() {
     }
 }
 
+// ===== FIRESTORE WRITE SAFETY NETS =====
+// _firestoreSnapshot mirrors the authoritative server state we most recently saw.
+// Every successful load/listener refresh updates it; every save compares DATA
+// against it BEFORE writing. If the outgoing write would delete a significant
+// fraction of rows or empty several previously-filled fields, we abort and prompt.
+// This is the defense against localStorage clobbers, dedup regressions, bad
+// concurrent edits, Sheets-sync races, etc.
+let _firestoreSnapshot = {};
+function _captureFirestoreSnapshot() {
+    const keys = ['accepted','staff','interviews','groups','waivers','rooms','slothy','meals','tshirts','budget','payments','docs_tasks','detailed_budget','logistics_overview','nextSteps','faq'];
+    keys.forEach(k => {
+        if (DATA[k] === undefined) return;
+        try { _firestoreSnapshot[k] = JSON.parse(JSON.stringify(DATA[k])); } catch(e) {}
+    });
+}
+function _sanityCheckBeforeSave(keysToWrite) {
+    const warnings = [];
+    keysToWrite.forEach(k => {
+        const oldVal = _firestoreSnapshot[k];
+        const newVal = DATA[k];
+        if (!Array.isArray(oldVal) || !Array.isArray(newVal)) return;
+        // Catch big row-count drops (e.g. 30 → 5)
+        if (oldVal.length >= 8 && newVal.length < oldVal.length * 0.7) {
+            warnings.push(`${k}: ${oldVal.length} → ${newVal.length} rows (${oldVal.length - newVal.length} missing)`);
+        }
+    });
+    // Deeper check on accepted: mass field-clearing
+    if (keysToWrite.indexOf('accepted') >= 0
+        && Array.isArray(_firestoreSnapshot.accepted)
+        && Array.isArray(DATA.accepted)) {
+        const byEmail = {};
+        _firestoreSnapshot.accepted.forEach(s => {
+            const e = normalizeEmail(s && (s['Email'] || s['email']));
+            if (e) byEmail[e] = s;
+        });
+        let wiped = 0;
+        const samples = [];
+        DATA.accepted.forEach(n => {
+            const e = normalizeEmail(n && (n['Email'] || n['email']));
+            const o = byEmail[e];
+            if (!o) return;
+            for (const f in o) {
+                const was = o[f]; const now = n[f];
+                if (was !== undefined && was !== null && was !== '' &&
+                    (now === '' || now === null || now === undefined)) {
+                    wiped++;
+                    if (samples.length < 6) samples.push(`${n['Full Name'] || e}.${f}`);
+                }
+            }
+        });
+        if (wiped >= 6) {
+            warnings.push(`${wiped} previously-filled fields about to be emptied (${samples.join(', ')}${wiped > samples.length ? '…' : ''})`);
+        }
+    }
+    return warnings;
+}
+// Audit log: every successful save records who/when/what to audit/{autoId}.
+function _logAuditEntry(keysToWrite) {
+    if (!db) return;
+    try {
+        const user = (firebaseAuth && firebaseAuth.currentUser) ? firebaseAuth.currentUser.email : 'unknown';
+        const entry = {
+            at: firebase.firestore.FieldValue.serverTimestamp(),
+            by: user,
+            keys: keysToWrite,
+            counts: {}
+        };
+        keysToWrite.forEach(k => {
+            if (Array.isArray(DATA[k])) entry.counts[k] = DATA[k].length;
+        });
+        db.collection('audit').add(entry).catch(e => console.warn('Audit write failed:', e));
+    } catch(e) {}
+}
+
 // Save DATA to Firestore (debounced, field-level merge)
 let _fsWriteTimer = null;
 let _fsDirtyKeys = new Set(); // track which DATA keys changed
@@ -26525,16 +26706,39 @@ function saveToFirestore(changedKey) {
     if (changedKey) _fsDirtyKeys.add(changedKey);
     clearTimeout(_fsWriteTimer);
     _fsWriteTimer = setTimeout(() => {
-        _skipNextSnapshot = true;
-        // Build update object with only changed keys (or all if none tracked)
+        // CRITICAL: never fall back to "write every key". Old code did
+        //   Array.from(_fsDirtyKeys) : Object.keys(DATA)
+        // which meant: if nothing was explicitly marked dirty (e.g. a listener-
+        // triggered save where no tracked key actually changed), we wrote the
+        // ENTIRE DATA object to Firestore, including keys whose in-memory copy
+        // was stale. That's how Sophie's edit got overwritten: a sync loop
+        // kept re-writing all 19 keys with the initial-load snapshot.
+        if (_fsDirtyKeys.size === 0) {
+            console.log('[saveToFirestore] skipped — no dirty keys (prevents accidental full-DATA overwrite)');
+            return;
+        }
+        var keysToWrite = Array.from(_fsDirtyKeys);
+
+        // SAFETY NET: sanity-check the outgoing write against last-known Firestore state.
+        const warnings = _sanityCheckBeforeSave(keysToWrite);
+        if (warnings.length > 0) {
+            const msg = '⚠️ This save looks destructive:\n\n  • ' + warnings.join('\n  • ')
+                + '\n\nContinue? Press Cancel to reload from Firestore instead.';
+            if (!confirm(msg)) {
+                console.warn('[SanityCheck] Save blocked. Warnings:', warnings);
+                _fsDirtyKeys.clear();
+                if (typeof loadFromFirestore === 'function') {
+                    loadFromFirestore().then(() => { if (typeof renderAll === 'function') renderAll(); });
+                }
+                return;
+            }
+        }
+
+        _skipNextSnapshot++;
         var writeObj = { updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: 'hub-user' };
-        var keysToWrite = _fsDirtyKeys.size > 0 ? Array.from(_fsDirtyKeys) : Object.keys(DATA);
         keysToWrite.forEach(function(k) {
             if (DATA[k] !== undefined) writeObj['d_' + k] = JSON.stringify(DATA[k]);
         });
-        // Legacy payload removed — was doubling document size and hitting 1MB Firestore limit
-        // Field-level keys (d_interviews, d_accepted, etc.) are the primary storage now
-        // One-time cleanup: delete the old payload field to reclaim space
         if (!window._payloadCleaned) {
             writeObj.payload = firebase.firestore.FieldValue.delete();
             window._payloadCleaned = true;
@@ -26542,23 +26746,107 @@ function saveToFirestore(changedKey) {
         _fsDirtyKeys.clear();
         db.collection('hub').doc('data').set(writeObj, { merge: true }).then(() => {
             console.log('Saved to Firestore (' + keysToWrite.join(', ') + ')');
-            _skipNextSnapshot = false;
+            _captureFirestoreSnapshot();   // refresh snapshot so next sanity check compares to this write
+            _logAuditEntry(keysToWrite);   // record in audit/
         }).catch(e => {
             console.error('Firestore write failed:', e);
             showToast('Error saving data to Firestore: ' + (e.message || 'Unknown error'), 'error');
-            _skipNextSnapshot = false;
         });
     }, 800); // debounce 800ms to batch rapid edits
 }
 
 // Load DATA from Firestore (one-time)
+// Dedupe a list of people-records by normalized name OR email — same person ⇒ one row.
+// Catches duplicates that creep in from Firestore (e.g. "Mia Jimenez" + "Isabella Jimenez",
+// or "Leanne Audet" with email + "Léanne Audet" without). First occurrence wins; later
+// occurrences only fill in fields that the winner left blank.
+function dedupePeople(arr) {
+    if (!Array.isArray(arr) || arr.length < 2) return arr;
+    const byKey = new Map();           // normalized key → entry
+    const aliasOfKey = new Map();      // alternate key → primary key (email points to name and vice-versa)
+    const order = [];
+    function fillBlanks(target, source) {
+        for (const k in source) {
+            const sv = source[k];
+            if (sv === null || sv === undefined || sv === '') continue;
+            const tv = target[k];
+            if (tv === null || tv === undefined || tv === '') target[k] = sv;
+        }
+    }
+    arr.forEach(item => {
+        if (!item) return;
+        const nk = normalizeName(item['Full Name'] || item['Name'] || item['name']);
+        const ek = normalizeEmail(item['Email'] || item['email']);
+        // Resolve to existing primary key if either nk or ek already maps to one.
+        let primary = null;
+        if (nk && byKey.has(nk)) primary = nk;
+        else if (ek && byKey.has(ek)) primary = ek;
+        else if (nk && aliasOfKey.has(nk)) primary = aliasOfKey.get(nk);
+        else if (ek && aliasOfKey.has(ek)) primary = aliasOfKey.get(ek);
+        if (primary) {
+            fillBlanks(byKey.get(primary), item);
+            // Register both keys under this primary so future variants merge in.
+            if (nk && nk !== primary) aliasOfKey.set(nk, primary);
+            if (ek && ek !== primary) aliasOfKey.set(ek, primary);
+        } else {
+            const key = nk || ek;
+            if (!key) { order.push(item); return; }
+            byKey.set(key, item);
+            if (nk && ek) aliasOfKey.set(nk === key ? ek : nk, key);
+            order.push(item);
+        }
+    });
+    return order;
+}
+
+// Merge a Firestore array onto a static array — keeps static-only entries AND dedupes the
+// result by person (so duplicate Firestore rows for the same person collapse).
+// Used for `accepted` and `staff`.
+function mergeByEmail(firestoreArr, staticArr) {
+    const fs = Array.isArray(firestoreArr) ? firestoreArr : [];
+    const stat = Array.isArray(staticArr) ? staticArr : [];
+    if (!fs.length) return dedupePeople(stat.slice());
+    if (!stat.length) return dedupePeople(fs);
+    const norm = e => normalizeEmail(e && (e['Email'] || e['email']));
+    const fsEmails = new Set(fs.map(norm).filter(Boolean));
+    const staticOnly = stat.filter(s => { const em = norm(s); return em && !fsEmails.has(em); });
+    return dedupePeople(staticOnly.length ? fs.concat(staticOnly) : fs);
+}
+
 async function loadFromFirestore() {
     if (!firebaseReady || !db) return false;
     try {
         const doc = await db.collection('hub').doc('data').get();
-        if (doc.exists && doc.data().payload) {
-            DATA = JSON.parse(doc.data().payload);
-            console.log('Loaded data from Firestore');
+        if (!doc.exists) return false;
+        const docData = doc.data();
+
+        // Try field-level format first (d_accepted, d_interviews, etc.)
+        let usedFieldLevel = false;
+        for (const fk in docData) {
+            if (fk.startsWith('d_') && docData.hasOwnProperty(fk)) {
+                const dataKey = fk.substring(2);
+                try {
+                    const parsed = JSON.parse(docData[fk]);
+                    if ((dataKey === 'accepted' || dataKey === 'staff') && typeof DATA_JSON !== 'undefined') {
+                        DATA[dataKey] = mergeByEmail(parsed, DATA_JSON[dataKey]);
+                    } else {
+                        DATA[dataKey] = parsed;
+                    }
+                    usedFieldLevel = true;
+                } catch(e) {}
+            }
+        }
+        if (usedFieldLevel) {
+            console.log('Loaded data from Firestore (field-level)');
+            _captureFirestoreSnapshot(); // anchor for future sanity checks
+            return true;
+        }
+
+        // Fallback to legacy payload format
+        if (docData.payload) {
+            DATA = JSON.parse(docData.payload);
+            console.log('Loaded data from Firestore (legacy payload)');
+            _captureFirestoreSnapshot();
             return true;
         }
         return false; // no data in Firestore yet
@@ -26576,15 +26864,28 @@ async function loadFromFirestore() {
 function listenToFirestore() {
     if (!firebaseReady || !db) return;
     firestoreUnsubscribe = db.collection('hub').doc('data').onSnapshot(snapshot => {
-        if (_skipNextSnapshot) {
-            _skipNextSnapshot = false;
+        if (_skipNextSnapshot > 0) {
+            _skipNextSnapshot--;
             return; // this was our own write, skip
         }
         if (!snapshot.exists) return;
         var docData = snapshot.data();
         // Don't touch DATA at all while admin is actively editing a cell
         if (_activeEditCell) {
-            _pendingHubPayload = docData.payload || null;
+            // Defer the field-level data for merge when edit completes.
+            // ALWAYS keep the latest snapshot (replacing any older one) — by the time
+            // the edit ends we want the freshest remote state. JSON.parse failures
+            // are now logged so silent corruption doesn't go unnoticed.
+            var deferred = {};
+            for (var dk in docData) {
+                if (dk.startsWith('d_') && docData.hasOwnProperty(dk)) {
+                    try { deferred[dk.substring(2)] = JSON.parse(docData[dk]); }
+                    catch(parseErr) { console.error('Deferred parse failed for ' + dk + ':', parseErr); }
+                }
+            }
+            if (Object.keys(deferred).length > 0) {
+                _pendingHubPayload = JSON.stringify(deferred);
+            }
             return;
         }
         // Try field-level merge first (d_interviews, d_accepted, etc.)
@@ -26592,7 +26893,15 @@ function listenToFirestore() {
         for (var fk in docData) {
             if (fk.startsWith('d_') && docData.hasOwnProperty(fk)) {
                 var dataKey = fk.substring(2);
-                try { DATA[dataKey] = JSON.parse(docData[fk]); usedFieldLevel = true; } catch(e) {}
+                try {
+                    var parsedFs = JSON.parse(docData[fk]);
+                    if ((dataKey === 'accepted' || dataKey === 'staff') && typeof DATA_JSON !== 'undefined') {
+                        DATA[dataKey] = mergeByEmail(parsedFs, DATA_JSON[dataKey]);
+                    } else {
+                        DATA[dataKey] = parsedFs;
+                    }
+                    usedFieldLevel = true;
+                } catch(parseErr2) { console.error('Snapshot parse failed for ' + fk + ':', parseErr2); }
             }
         }
         // Fallback to legacy payload if no field-level data found
@@ -26606,7 +26915,9 @@ function listenToFirestore() {
             }
         }
         _pendingHubPayload = null;
-        migrateDataFields();
+        migrateDataFields(true);
+        try { auditDataIntegrity(); } catch(e) {}
+        _captureFirestoreSnapshot(); // anchor for future sanity checks
         renderAll();
     }, err => {
         console.error('Firestore listener error:', err);
@@ -26631,9 +26942,7 @@ function listenToStudentProfiles() {
                 const email = change.doc.id;
                 // Per-email time-based guard: skip if admin just edited this student
                 if (_skipStudentSyncUntil[email] && Date.now() < _skipStudentSyncUntil[email]) return;
-                const row = DATA.accepted.find(r =>
-                    (r['Email'] || '').toLowerCase().trim() === email
-                );
+                const row = findByEmail(DATA.accepted, email);
                 if (!row) return;
                 // Sync student fields → admin fields (only if value actually changed)
                 const pairs = [
@@ -26645,21 +26954,45 @@ function listenToStudentProfiles() {
                     ['ID', sd.studentId],
                     ['Food & Allergies', sd.food],
                     ['Health & Accessibility', sd.health],
-                    ['Emergency Contact', sd.emergencyContact],
                     ['Country', sd.country],
                     ['Degree', sd.degree],
                     ['Major', sd.major],
                     ['Program', sd.major]
                 ];
+                // CRITICAL: only sync non-blank student values into admin fields. A blank
+                // student value (e.g. they cleared their phone, or a fresh profile with
+                // empty defaults) MUST NOT clobber admin-curated data.
                 for (const [key, val] of pairs) {
-                    if (val !== undefined && val !== null && row[key] !== undefined) {
-                        if (row[key] !== val) { row[key] = val; changed = true; }
+                    if (val === undefined || val === null || val === '') continue;
+                    if (row[key] === undefined) continue;
+                    if (row[key] !== val) { row[key] = val; changed = true; }
+                }
+                // Emergency Contact is special: the student portal splits it into 3
+                // fields (name / relation / phone) but admin's d_accepted has a single
+                // combined field. If we synced only `sd.emergencyContact` (name only)
+                // it would strip admin's richer "Name, Relation, Phone" string.
+                // So: compose from all three and only overwrite when the new value
+                // includes a phone number (contains a digit).
+                // Only overwrite admin's Emergency Contact if it's currently missing a
+                // phone number. Otherwise admin's richer combined string (which might
+                // already embed name + phone) stays intact — prevents duplicated text
+                // like "Steve Landis, +1 917..., Father and mother, +1 917...".
+                const adminEC = row['Emergency Contact'];
+                if (adminEC !== undefined && !/\d/.test(adminEC || '')) {
+                    const ecName = (sd.emergencyContact || '').trim();
+                    const ecRel = (sd.emergencyRelation || '').trim();
+                    const ecPhone = (sd.emergencyPhone || '').trim();
+                    const ecParts = [ecName, ecRel, ecPhone].filter(Boolean);
+                    const ecCombined = ecParts.join(', ');
+                    if (ecCombined && /\d/.test(ecCombined) && adminEC !== ecCombined) {
+                        row['Emergency Contact'] = ecCombined;
+                        changed = true;
                     }
                 }
             }
         });
         if (changed && !_activeEditCell) {
-            _skipNextSnapshot = true;
+            _skipNextSnapshot++;
             saveData();
             renderAll();
         }
@@ -27073,26 +27406,50 @@ function loadSheetsConfig() {
     }
 }
 
+// Wait until Firebase Auth has restored its persisted session (or confirmed there
+// isn't one). Without this, the admin's first Firestore reads fire before the auth
+// token is attached to the SDK, rules see request.auth == null, deny, and the
+// cascade of "Missing or insufficient permissions" errors never recovers.
+function _waitForAuthReady(timeoutMs) {
+    return new Promise(resolve => {
+        if (!firebaseAuth) firebaseAuth = firebase.auth();
+        let done = false;
+        const finish = user => { if (done) return; done = true; try { unsub(); } catch(e) {} resolve(user || null); };
+        const unsub = firebaseAuth.onAuthStateChanged(finish, () => finish(null));
+        setTimeout(() => finish(null), timeoutMs || 4000);
+    });
+}
+
 async function initData() {
     // Initialize Firebase
     const fbOk = initFirebase();
+    if (fbOk) {
+        try { await _waitForAuthReady(); } catch(e) { console.warn('Auth ready wait failed:', e); }
+    }
 
     // Load sheets config from localStorage
     loadSheetsConfig();
 
-    // Try loading from Firestore first, fall back to localStorage, then DATA_JSON
+    // Load data: ALWAYS prefer Firestore. localStorage is a write-through cache only —
+    // never authoritative. Reading localStorage as primary caused major data-loss
+    // incidents because stale cached state would clobber fresh Firestore data on save.
     let loadedFromFirestore = false;
     if (fbOk) {
         loadedFromFirestore = await loadFromFirestore();
     }
-
     if (!loadedFromFirestore) {
+        // Firestore unavailable — try localStorage as last-resort cache, else seed from DATA_JSON.
         const stored = localStorage.getItem('crTrip_v11');
-        DATA = stored ? JSON.parse(stored) : JSON.parse(JSON.stringify(DATA_JSON));
+        if (stored) {
+            try { DATA = JSON.parse(stored); } catch(e) { DATA = JSON.parse(JSON.stringify(DATA_JSON)); }
+        } else {
+            DATA = JSON.parse(JSON.stringify(DATA_JSON));
+        }
     }
 
     // Run field migration (handles Project, Spanish Level, nextSteps, faq, logistics, etc.)
-    migrateDataFields();
+    // Skip letter→named field migration if data came from localStorage or Firestore (user edits are authoritative)
+    migrateDataFields(loadedFromFirestore);
 
     // Restore staff photos from separate Firestore doc (permanent backup that can't be wiped)
     if (fbOk && db) {
@@ -27174,112 +27531,21 @@ async function initData() {
 
     // Start Firestore real-time listeners
     if (firebaseReady) {
+        // Skip the initial Firestore snapshot — we already loaded from localStorage/Firestore
+        // This prevents the listener from overwriting user edits with stale Firestore data
+        _skipNextSnapshot++;
         listenToFirestore();
         listenToStudentProfiles(); // sync student edits → admin accepted list
-        // If this is the first time and Firestore was empty, seed it with current data
+        // If this is the first time and Firestore was empty, seed it with current data.
+        // Explicitly mark every in-memory key as dirty — saveToFirestore no longer
+        // falls back to "write everything" on its own, so the seed needs to be explicit.
         if (!loadedFromFirestore) {
+            Object.keys(DATA).forEach(function(k) { _fsDirtyKeys.add(k); });
             saveToFirestore();
         }
     }
 
-    // ===== ONE-TIME DATA RECOVERY (March 2026) =====
-    // Recover Leanne Audet & Lauralie Drouin to accepted list, and staff photos from localStorage
-    if (firebaseReady && !window._recoveryDone) {
-        window._recoveryDone = true;
-        setTimeout(async () => {
-            try {
-                let changed = false;
-                if (!DATA.accepted) DATA.accepted = [];
-
-                // 1. Add Leanne Audet if not present
-                const leanneEmail = 'leanneaudet58@gmail.com';
-                if (!DATA.accepted.find(r => (r['Email'] || '').toLowerCase() === leanneEmail)) {
-                    // Try to pull her data from Firestore students collection
-                    let leanneData = { 'Email': leanneEmail, 'Full Name': 'Leanne Audet', 'Name': 'Leanne Audet' };
-                    try {
-                        const leanneDoc = await db.collection('students').doc(leanneEmail).get();
-                        if (leanneDoc.exists) {
-                            const sd = leanneDoc.data();
-                            if (sd.name) { leanneData['Full Name'] = sd.name; leanneData['Name'] = sd.name; }
-                            if (sd.phone) leanneData['Phone Number'] = sd.phone;
-                            if (sd.studentId) { leanneData['Student ID'] = sd.studentId; leanneData['ID'] = sd.studentId; }
-                            if (sd.passport) leanneData['Passport #'] = sd.passport;
-                            if (sd.food) leanneData['Food & Allergies'] = sd.food;
-                            if (sd.health) leanneData['Health & Accessibility'] = sd.health;
-                            if (sd.emergencyContact) leanneData['Emergency Contact'] = sd.emergencyContact;
-                        }
-                    } catch(e) { console.warn('Could not fetch Leanne student doc:', e); }
-                    DATA.accepted.push(leanneData);
-                    changed = true;
-                    console.log('Recovery: Added Leanne Audet to accepted list');
-                }
-
-                // 2. Add Lauralie Drouin if not present
-                const lauralieEmail = 'lauraliedrouin@gmail.com';
-                if (!DATA.accepted.find(r => (r['Email'] || '').toLowerCase() === lauralieEmail)) {
-                    let lauralieData = { 'Email': lauralieEmail, 'Full Name': 'Lauralie Drouin', 'Name': 'Lauralie Drouin' };
-                    try {
-                        const lauralieDoc = await db.collection('students').doc(lauralieEmail).get();
-                        if (lauralieDoc.exists) {
-                            const sd = lauralieDoc.data();
-                            if (sd.name) { lauralieData['Full Name'] = sd.name; lauralieData['Name'] = sd.name; }
-                            if (sd.phone) lauralieData['Phone Number'] = sd.phone;
-                            if (sd.studentId) { lauralieData['Student ID'] = sd.studentId; lauralieData['ID'] = sd.studentId; }
-                            if (sd.passport) lauralieData['Passport #'] = sd.passport;
-                            if (sd.food) lauralieData['Food & Allergies'] = sd.food;
-                            if (sd.health) lauralieData['Health & Accessibility'] = sd.health;
-                            if (sd.emergencyContact) lauralieData['Emergency Contact'] = sd.emergencyContact;
-                        }
-                    } catch(e) { console.warn('Could not fetch Lauralie student doc:', e); }
-                    DATA.accepted.push(lauralieData);
-                    changed = true;
-                    console.log('Recovery: Added Lauralie Drouin to accepted list');
-                }
-
-                // 3. Restore staff photos from localStorage backup
-                try {
-                    const lsRaw = localStorage.getItem('crTrip_v11');
-                    if (lsRaw) {
-                        const lsData = JSON.parse(lsRaw);
-                        if (lsData.staff && DATA.staff) {
-                            lsData.staff.forEach(lsStaff => {
-                                if (lsStaff['Photo'] || lsStaff['PhotoRaw']) {
-                                    const match = DATA.staff.find(s =>
-                                        (s['Email'] || '').toLowerCase() === (lsStaff['Email'] || '').toLowerCase()
-                                    );
-                                    if (match) {
-                                        if (lsStaff['Photo'] && !match['Photo']) { match['Photo'] = lsStaff['Photo']; changed = true; }
-                                        if (lsStaff['PhotoRaw'] && !match['PhotoRaw']) { match['PhotoRaw'] = lsStaff['PhotoRaw']; changed = true; }
-                                        if (lsStaff['PhotoPosY'] !== undefined && !match['PhotoPosY']) { match['PhotoPosY'] = lsStaff['PhotoPosY']; changed = true; }
-                                        if (lsStaff['Passport'] && !match['Passport']) { match['Passport'] = lsStaff['Passport']; changed = true; }
-                                        if (lsStaff['DoB'] && !match['DoB']) { match['DoB'] = lsStaff['DoB']; changed = true; }
-                                        if (lsStaff['Emergency Contact'] && !match['Emergency Contact']) { match['Emergency Contact'] = lsStaff['Emergency Contact']; changed = true; }
-                                        if (lsStaff['Emergency Phone'] && !match['Emergency Phone']) { match['Emergency Phone'] = lsStaff['Emergency Phone']; changed = true; }
-                                        if (changed) console.log('Recovery: Restored photo/data for staff ' + match['Full Name']);
-                                    }
-                                }
-                            });
-                        }
-                    }
-                } catch(e) { console.warn('Could not restore from localStorage:', e); }
-
-                // 4. Save recovered data
-                if (changed) {
-                    _fsDirtyKeys.add('accepted');
-                    _fsDirtyKeys.add('staff');
-                    saveToFirestore();
-                    renderAll();
-                    console.log('Recovery: Data restored and saved to Firestore');
-                    showToast('Data recovery complete — Leanne & Lauralie added, staff data restored.', 'success');
-                } else {
-                    console.log('Recovery: No changes needed, data already present');
-                }
-            } catch(e) {
-                console.error('Recovery script error:', e);
-            }
-        }, 3000); // Wait 3s for Firestore listeners to populate DATA
-    }
-    // ===== END RECOVERY =====
+    // (Recovery script removed — was a one-time March 2026 fix that kept re-running)
 
     // Update Firebase status indicator
     const fbStatusEl = document.getElementById('firebaseStatus');
@@ -27883,7 +28149,7 @@ function updateDecision(idx, newDecision) {
 
     if (newDecision === 'Accepted') {
         if (!DATA.accepted) DATA.accepted = [];
-        const existing = DATA.accepted.find(a => a['Email'] === email);
+        const existing = findByEmail(DATA.accepted, email);
         if (!existing) {
             DATA.accepted.push({
                 'Email': email,
@@ -27892,7 +28158,10 @@ function updateDecision(idx, newDecision) {
         }
     } else {
         if (DATA.accepted) {
-            DATA.accepted = DATA.accepted.filter(a => a['Email'] !== email);
+            // Use normalized email match — strict !== was failing silently when
+            // casing differed (e.g. "Foo@Bar" stored vs "foo@bar" passed).
+            const target = normalizeEmail(email);
+            DATA.accepted = DATA.accepted.filter(a => normalizeEmail(a && (a['Email'] || a['email'])) !== target);
         }
     }
 
@@ -27906,7 +28175,7 @@ function updateDecision(idx, newDecision) {
         DATA.waitlistRank = DATA.waitlistRank.filter(e => e !== email);
     }
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderInterviews();
 }
@@ -27933,7 +28202,7 @@ function moveWaitlist(email, direction) {
 
     // Swap
     [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderInterviews();
 }
@@ -27986,7 +28255,7 @@ function updateInterviewField(idx, field, value) {
     
     DATA.interviews[idx][field] = value;
     syncStudentField(DATA.interviews, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderInterviews();
 }
@@ -28000,7 +28269,7 @@ function updateApplicationField(idx, field, value) {
     
     DATA.interviews[idx][field] = value;
     syncStudentField(DATA.interviews, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderApplications();
 }
@@ -28212,7 +28481,7 @@ function deleteAcceptedStudent(idx) {
 
     // Remove from accepted array
     DATA.accepted.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderAccepted();
     updateCounts();
@@ -28249,7 +28518,7 @@ function toggleDocumentAccepted(idx, field) {
         DATA.accepted[idx][keyToUse] = isChecked ? null : 'Yes';
     }
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderAccepted();
 }
@@ -28291,7 +28560,7 @@ function showGroupDropdown(el, idx) {
             const letterKey = Object.keys(DATA.accepted[idx]).find(function(k) { return /^[A-Z]{1,2}$/.test(k) && DATA.accepted[idx][k] === currentProject; });
             if (letterKey) DATA.accepted[idx][letterKey] = group;
             syncStudentField(DATA.accepted[idx]['Email'] || '', 'Project', group);
-            _skipNextSnapshot = true;
+            _skipNextSnapshot++;
             saveData();
             renderAccepted();
             dropdown.remove();
@@ -28308,7 +28577,7 @@ function showGroupDropdown(el, idx) {
     clearItem.onclick = function(e) {
         e.stopPropagation();
         DATA.accepted[idx]['Project'] = '';
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderAccepted();
         dropdown.remove();
@@ -28365,7 +28634,7 @@ function showSpanishDropdown(el, idx) {
             e.stopPropagation();
             DATA.accepted[idx]['Spanish Level'] = level;
             syncAcceptedToFirestore(idx);
-            _skipNextSnapshot = true;
+            _skipNextSnapshot++;
             saveData();
             renderAccepted();
             dropdown.remove();
@@ -28409,7 +28678,7 @@ function updateAcceptedField(idx, field, value) {
 
     DATA.accepted[idx][field] = value;
     syncStudentField(DATA.accepted, idx, field, value);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderAccepted();
     // Sync to Firestore student profile
@@ -28510,7 +28779,7 @@ function setBudgetFxRate(currency, rate) {
     if (!DATA._fxRates) DATA._fxRates = { usdToCad: 1.39, crcToCad: 0.0026 };
     if (currency === 'USD') DATA._fxRates.usdToCad = parseFloat(rate) || 1.39;
     if (currency === 'CRC') DATA._fxRates.crcToCad = parseFloat(rate) || 0.0026;
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     recomputeAllCadValues();
     renderBudgetTable();
@@ -28596,7 +28865,7 @@ function saveBudgetEdits() {
             DATA.budget[idx][key] = inp.value || null;
         }
     });
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 }
 
@@ -28615,7 +28884,7 @@ function addBudgetRow() {
 }
 
 function deleteBudgetRow(idx) {
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     if (confirm('Delete this budget row?')) { DATA.budget.splice(idx, 1); saveData(); renderBudgetTable(); showToast('Row deleted', 'success'); }
 }
 
@@ -29022,7 +29291,7 @@ function saveDetailedBudgetEdits() {
             if (colMap[key]) DATA.detailed_budget[idx][colMap[key]] = inp.value || null;
         }
     });
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 }
 
@@ -29036,7 +29305,7 @@ function autoConvertDetailedRow(idx, newCurrency, newAmount) {
     const cad = convertToCAD(amount, cur);
     row['Total paid (in CAD)'] = cad;
     row['G'] = cad;
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 }
 
@@ -29051,7 +29320,7 @@ function addDetailedBudgetRow() {
 }
 
 function deleteDetailedBudgetRow(idx) {
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     if (confirm('Delete this expense line?')) { DATA.detailed_budget.splice(idx, 1); saveData(); renderDetailedBudgetTable(); showToast('Line deleted', 'success'); }
 }
 
@@ -29202,7 +29471,11 @@ function renderDetailedBudgetTable() {
     });
 
     html += `</tbody></table></div>`;
-    document.getElementById('detailedBudgetContent').innerHTML = html;
+    // Null-guard: the container is absent on tabs that don't mount this view.
+    // Without this, renderAll() would throw and abort mid-way through render,
+    // leaving the UI in an inconsistent state.
+    const dbc = document.getElementById('detailedBudgetContent');
+    if (dbc) dbc.innerHTML = html;
 }
 
 // ── Payments Section ──
@@ -29236,7 +29509,7 @@ function savePaymentsEdits() {
             }
         }
     });
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 }
 
@@ -29262,7 +29535,7 @@ function addPaymentRow() {
 }
 
 function deletePaymentRow(idx) {
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     if (confirm('Delete this payment row?')) { DATA.payments.splice(idx, 1); saveData(); renderPaymentsTable(); showToast('Payment deleted', 'success'); }
 }
 
@@ -29295,7 +29568,7 @@ function cyclePaymentStatus(realIdx) {
     if (next.toLowerCase() === 'payed') { row['P'] = 'Yes'; }
     else if (next === 'partially') { row['P'] = 'partially'; }
     else { row['P'] = 'No'; }
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderPaymentsTable();
 }
@@ -29584,7 +29857,7 @@ function addSlothyPoints(studentName, amount) {
         return;
     }
 
-    const student = DATA.slothy.find(s => (s['Name'] || s['A']) === studentName);
+    const student = findByName(DATA.slothy, studentName, 'Name') || findByName(DATA.slothy, studentName, 'A');
     if (!student) {
         console.warn('Student not found in slothy:', studentName);
         return;
@@ -29594,7 +29867,7 @@ function addSlothyPoints(studentName, amount) {
     const newAmount = current + amount;
     student['Funds'] = String(newAmount.toFixed(1));
     student['C'] = student['Funds'];
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderSlothyTable();
 }
@@ -29615,7 +29888,7 @@ function addGroupPoints(groupName, amount) {
             s['C'] = s['Funds'];
         }
     });
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderSlothyTable();
 }
@@ -29641,7 +29914,7 @@ function applySlothyBulkFunds() {
         const val = parseFloat(inp.value) || 0;
         if (val !== 0) {
             const name = inp.dataset.name;
-            const student = DATA.slothy.find(s => (s['Name'] || s['A'] || '') === name);
+            const student = findByName(DATA.slothy, name, 'Name') || findByName(DATA.slothy, name, 'A');
             if (student) {
                 const current = parseFloat(student['Funds'] || student['C'] || '0');
                 student['Funds'] = String((current + val).toFixed(1));
@@ -29651,7 +29924,7 @@ function applySlothyBulkFunds() {
         }
     });
     if (changed) {
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         showToast('Funds updated!', 'success');
     }
@@ -30002,7 +30275,7 @@ function saveMeal(index) {
     meal['Notes'] = notes || null;
     meal['G'] = notes || null;
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     showToast('Meal updated');
     mealEditingIndex = -1;
@@ -30016,7 +30289,7 @@ function deleteMeal(index) {
     if (!confirm('Remove this meal? This action cannot be undone.')) return;
 
     data.splice(index, 1);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     showToast('Meal deleted');
     mealEditingIndex = -1;
@@ -30128,7 +30401,7 @@ function confirmAddMeal() {
     };
 
     data.push(newMeal);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     showToast('Meal added');
     cancelAddMealModal();
@@ -30182,7 +30455,7 @@ function recalcTshirtFromMultiplier() {
         grandTotal += colTotal;
     });
     prodTotal['I'] = String(grandTotal);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderTshirtTable();
 }
@@ -30225,7 +30498,7 @@ function applyTshirtProdEdits() {
         grandTotal += colTotal;
     });
     prodTotal['I'] = String(grandTotal);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     tshirtProdEditMode = false;
     renderTshirtTable();
@@ -31012,7 +31285,7 @@ function saveContact() {
         showToast('Contact added', 'success');
     }
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     closeContactModal();
     renderContacts();
@@ -31038,7 +31311,7 @@ function deleteContact() {
     }
     
     DATA.logistics_overview.contacts.splice(window._editingContactIdx, 1);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     closeContactModal();
     renderContacts();
@@ -31120,7 +31393,7 @@ function toggleLogisticsStatus(element, date, eventIdx) {
         const eventInList = logistics.schedule.find(e => e === events[eventIdx]);
         if (!eventInList) return;
         eventInList.status = newStatus;
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderLogisticsOverview();
     }
@@ -31142,7 +31415,7 @@ function updateLogisticsStatus(date, eventIdx, newStatus) {
         const eventInList = logistics.schedule.find(e => e === events[eventIdx]);
         if (!eventInList) return;
         eventInList.status = newStatus;
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderLogisticsOverview();
     }
@@ -31516,7 +31789,7 @@ function saveLogisticsEvent() {
     }
 
     closeLogisticsModal();
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31543,7 +31816,7 @@ function deleteLogisticsEvent() {
     }
 
     closeLogisticsModal();
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31769,7 +32042,7 @@ function duplicateEventToDays() {
     });
 
     showToast(`Event copied to ${duplicatedCount} day(s)`, 'success');
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderLogisticsOverview();
 }
@@ -31779,7 +32052,7 @@ function updateTripDates() {
     if (!DATA.logistics_overview) DATA.logistics_overview = { schedule: [], contacts: [] };
     if (startVal) DATA.logistics_overview._tripStart = startVal;
     if (endVal) DATA.logistics_overview._tripEnd = endVal;
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     showToast('Trip dates updated', 'success');
 }
@@ -31790,7 +32063,7 @@ function saveLogisticsStudentNote() {
     _stuNoteTimer = setTimeout(() => {
         if (!DATA.logistics_overview) DATA.logistics_overview = { schedule: [], contacts: [] };
         DATA.logistics_overview.studentNote = (document.getElementById('logisticsStudentNote') || {}).value || '';
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         showToast('Student note saved', 'success');
     }, 800);
@@ -31809,7 +32082,7 @@ function saveDayNote(date, value) {
     if (!date) { showToast('Invalid date', 'error'); return; }
     const trimmedValue = value ? value.trim() : '';
     DATA.logistics_overview.dayNotes[date] = trimmedValue;
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     showToast('Day note saved', 'success');
 }
@@ -32060,7 +32333,7 @@ function markAllTasksDone() {
         }
     });
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderTasks();
 }
@@ -32088,7 +32361,7 @@ function clearCompletedTasks() {
         DATA.docs_tasks.splice(t._origIdx, 1);
     });
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderTasks();
 }
@@ -32342,7 +32615,7 @@ function cycleTaskStatus(idx) {
         const cycle = { 'Not started': 'In progress', 'In progress': 'Completed', 'Completed': 'Not started' };
         d['C'] = cycle[d['C']] || 'In progress';
     }
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderTasks();
 }
@@ -32396,7 +32669,7 @@ function saveDocument() {
         DATA.docs_tasks.unshift(newDoc);
         showToast('Document added', 'success');
     }
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     document.getElementById('docModal').style.display = 'none';
     renderDocuments();
@@ -32408,7 +32681,7 @@ function deleteDocument(idx) {
         return;
     }
     DATA.docs_tasks.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderDocuments();
     showToast('Document deleted', 'success');
@@ -32495,7 +32768,7 @@ function saveTask() {
         'GHIJKLMNOPQRSTUVWXYZ'.split('').forEach(c => newTask[c] = null);
         DATA.docs_tasks.push(newTask);
     }
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     document.getElementById('taskModal').style.display = 'none';
     renderTasks();
@@ -32510,7 +32783,7 @@ function deleteTask(idx) {
 
     if (!confirm('Delete this task?')) return;
     DATA.docs_tasks.splice(idx, 1);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderTasks();
 }
@@ -32626,22 +32899,42 @@ function makeEditable(element, idx, field, dataArray) {
         syncStudentField(isAccepted ? DATA.accepted : dataArray, idx, field, newValue);
 
         // Skip the next hub/data snapshot triggered by our own saveData()
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
 
         // NOW release the edit guard after all syncs are initiated
         _activeEditCell = null;
 
-        // Apply any deferred hub/data payload that arrived while editing
-        // but merge our edit into it so it's not lost
+        // Apply any deferred hub/data payload that arrived while editing.
+        // CRITICAL: locate the edited row in pending data by Email (not by index),
+        // because remote sorts/dedupes/inserts can shift indices and we'd otherwise
+        // overwrite the wrong student's data with our edit.
         if (_pendingHubPayload) {
-            const pending = JSON.parse(_pendingHubPayload);
-            if (isAccepted && pending.accepted && pending.accepted[idx]) {
-                pending.accepted[idx][field] = newValue;
-            }
-            DATA = pending;
+            try {
+                const pending = JSON.parse(_pendingHubPayload);
+                for (var pk in pending) {
+                    if (!pending.hasOwnProperty(pk)) continue;
+                    if (pk === 'accepted' && isAccepted) {
+                        const editedRow = JSON.parse(JSON.stringify(DATA.accepted[idx]));
+                        const editedEmail = (editedRow && (editedRow['Email'] || editedRow['email'])) || '';
+                        DATA.accepted = pending.accepted;
+                        if (editedEmail) {
+                            const target = findByEmail(DATA.accepted, editedEmail);
+                            if (target) {
+                                Object.assign(target, editedRow);
+                                target[field] = newValue;
+                            } else {
+                                // Edited row no longer in remote — re-insert it to avoid losing the edit.
+                                DATA.accepted.push(editedRow);
+                            }
+                        }
+                    } else {
+                        DATA[pk] = pending[pk];
+                    }
+                }
+            } catch(e) { console.warn('Deferred payload merge failed:', e); }
             _pendingHubPayload = null;
-            migrateDataFields();
+            migrateDataFields(true);
         }
 
         // Preserve scroll position during re-render
@@ -32706,7 +32999,7 @@ function makeEditableEmail(element, idx, field, dataArray) {
             });
         });
         if (isAccepted) syncAcceptedToFirestore(idx);
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         _activeEditCell = null;
         if (_pendingHubPayload) { _pendingHubPayload = null; }
@@ -32728,6 +33021,7 @@ function deleteApplicant(idx) {
     const name = DATA.interviews[idx]['Name'] || DATA.interviews[idx]['Email'] || 'this applicant';
     if (!confirm('Remove ' + name + ' from applications?')) return;
     DATA.interviews.splice(idx, 1);
+    _skipNextSnapshot++;
     saveData();
     renderApplications();
     updateCounts();
@@ -32902,7 +33196,7 @@ function addApplicant() {
         'Deadline for decision': ''
     });
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     updateCounts();
     closeModal();
@@ -32915,7 +33209,7 @@ function addApplicant() {
 }
 
 function toggleTask(checkbox) {
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 }
 
@@ -32935,7 +33229,7 @@ function resetData() {
     if (confirm('Reset all data to original? This cannot be undone.')) {
         DATA = JSON.parse(JSON.stringify(DATA_JSON));
         localStorage.removeItem('crTrip_v11');
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         updateCounts();
         renderAccepted();
@@ -33121,10 +33415,7 @@ function renderRooms() {
         students.forEach(student => {
             // Find project from accepted data for color coding
             const accepted = DATA.accepted || [];
-            const match = accepted.find(a => {
-                const aName = (a['Full Name'] || '').toLowerCase().trim();
-                return aName === student.name.toLowerCase().trim();
-            });
+            const match = findByName(accepted, student.name, 'Full Name');
             const project = match ? match['Project'] : '';
             const pColor = getProjectColor(project);
             const chipBorder = pColor ? 'border-left:3px solid ' + pColor.border + ';' : '';
@@ -33212,7 +33503,7 @@ function submitAddRoom() {
     newEntry[hotelMap['volcan']] = window.activeHotelTab === 'volcan' ? roomName : '';
     newEntry['Notes'] = null;
     DATA.rooms.push(newEntry);
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderRooms();
     closeAddRoomModal();
@@ -33297,12 +33588,11 @@ function selectAddPerson(name) {
 
     // Auto-fill passport if we can find it
     var accepted = DATA.accepted || [];
-    var match = accepted.find(function(s) { return (s['Full Name'] || '').trim() === name.trim(); });
+    var match = findByName(accepted, name, 'Full Name');
     if (match) {
         var passport = '';
         // Check rooms data for existing passport
-        var roomsData = DATA.rooms || [];
-        var roomMatch = roomsData.find(function(r) { return (r['Name'] || '').trim() === name.trim(); });
+        var roomMatch = findByName(DATA.rooms, name, 'Name');
         if (roomMatch && roomMatch['Passport #']) passport = roomMatch['Passport #'];
         if (passport) document.getElementById('addPersonPassportInput').value = passport;
     }
@@ -33330,7 +33620,7 @@ function submitAddPerson() {
     if (alreadyIn) { showToast(name + ' is already assigned in this hotel', 'warning'); return; }
 
     // Check if person already exists in rooms data (for other hotels)
-    var existing = rooms.find(function(r) { return (r['Name'] || '').toLowerCase().trim() === name.toLowerCase(); });
+    var existing = findByName(rooms, name, 'Name');
     if (existing) {
         existing[hotelField] = roomChoice;
         if (passport && !existing['Passport #']) existing['Passport #'] = passport;
@@ -33343,7 +33633,7 @@ function submitAddPerson() {
         DATA.rooms.push(newEntry);
     }
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
     renderRooms();
     closeAddPersonModal();
@@ -33378,11 +33668,10 @@ function reassignStudent(studentName, newRoom) {
     };
     const hotelField = hotelMap[window.activeHotelTab] || hotelMap['wyndham'];
 
-    const rooms = DATA.rooms || [];
-    const row = rooms.find(r => (r['Name'] || '') === studentName);
+    const row = findByName(DATA.rooms, studentName, 'Name');
     if (row) {
         row[hotelField] = newRoom;
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderRooms();
         showToast(studentName + ' moved to ' + newRoom, 'success');
@@ -33399,11 +33688,10 @@ function removePersonFromRoom(studentName) {
 
     if (!confirm('Remove ' + studentName + ' from this room at ' + hotelField + '?')) return;
 
-    const rooms = DATA.rooms || [];
-    const row = rooms.find(r => (r['Name'] || '') === studentName);
+    const row = findByName(DATA.rooms, studentName, 'Name');
     if (row) {
         row[hotelField] = '';
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderRooms();
         showToast(studentName + ' removed from room', 'success');
@@ -33438,7 +33726,7 @@ function openStudentCard(identifier, event) {
     // Also search in rooms data by name
     if (!student) {
         const rooms = DATA.rooms || [];
-        const roomRow = rooms.find(r => r['Name'] && r['Name'].toLowerCase().trim() === identifier.toLowerCase().trim());
+        const roomRow = findByName(rooms, identifier, 'Name');
         if (roomRow && roomRow['Email']) {
             const email = roomRow['Email'].toLowerCase().trim();
             student = accepted.find(a => (a['Email'] || '').toLowerCase().trim() === email);
@@ -33531,19 +33819,61 @@ function renderStudentCard(student) {
 
     document.getElementById('studentCardName').textContent = escapeHtml(student['Full Name'] || 'Student Profile');
 
-    // Load student photo from Firestore
+    // Load student photo: try Firestore first, fall back to STUDENT_BIOS static photo
     const stuEmail = (student['Email'] || '').toLowerCase().trim();
-    let _adminPhotoBase64 = '';
+    const stuName = student['Full Name'] || '';
+    window._adminCardPhotoEmail = stuEmail;
+    // Find static photo from STUDENT_BIOS via shared normalizer (handles aliases + accents)
+    const _bioMatch = typeof STUDENT_BIOS !== 'undefined' && findByName(STUDENT_BIOS, stuName, 'name');
+    const _staticPhoto = _bioMatch ? _bioMatch.photo : '';
     if (db && stuEmail) {
         db.collection('students').doc(stuEmail).get().then(snap => {
-            if (snap.exists && snap.data().photoBase64) {
+            if (window._adminCardPhotoEmail !== stuEmail) return;
+            const firestorePhoto = snap.exists && snap.data().photoBase64;
+            const photoSrc = firestorePhoto || _staticPhoto;
+            if (photoSrc) {
                 const img = document.getElementById('adminStuCardPhoto');
-                if (img) { img.src = snap.data().photoBase64; img.style.display = ''; }
+                if (img) { img.src = photoSrc; img.style.display = ''; }
                 const ph = document.getElementById('adminStuCardPhotoPlaceholder');
                 if (ph) ph.style.display = 'none';
             }
-        }).catch(() => {});
+        }).catch(() => {
+            if (_staticPhoto) {
+                const img = document.getElementById('adminStuCardPhoto');
+                if (img) { img.src = _staticPhoto; img.style.display = ''; }
+                const ph = document.getElementById('adminStuCardPhotoPlaceholder');
+                if (ph) ph.style.display = 'none';
+            }
+        });
+    } else if (_staticPhoto) {
+        // No Firestore — use static photo immediately after body renders
+        setTimeout(() => {
+            const img = document.getElementById('adminStuCardPhoto');
+            if (img) { img.src = _staticPhoto; img.style.display = ''; }
+            const ph = document.getElementById('adminStuCardPhotoPlaceholder');
+            if (ph) ph.style.display = 'none';
+        }, 0);
     }
+
+    // Build document toggle checkboxes
+    let docToggles = '';
+    documentsToCheck.forEach(docField => {
+        const val = getDocValue(docField);
+        const isYes = hasDoc(val);
+        const docLabel = docField === 'Pre-departure registation' ? 'Pre-Dep Registration' :
+                        docField === 'Pre-departure certificate' ? 'Pre-Dep Certificate' :
+                        docField === 'Travel Registry App' ? 'Travel Registry' :
+                        docField === 'Liability Waiver' ? 'Liability Waiver' : docField;
+        const checkId = 'scDoc_' + docField.replace(/\s+/g, '_');
+        docToggles += `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="${checkId}" ${isYes ? 'checked' : ''} onchange="updateStudentCardField('${docField}', this.checked ? 'Yes' : '')" style="width:16px;height:16px;accent-color:#22c55e;">
+            <span style="color:${isYes ? '#16a34a' : '#94a3b8'};">${escapeHtml(docLabel)}</span>
+        </label>`;
+    });
+
+    // Project options
+    const projectOptions = ['Monkey bridges', 'Ocean microplastics', 'Micro-farming', 'Wildlife', 'Compost', 'Animal rescue'];
+    const spanishOptions = ['None', 'Basic', 'Average', 'Above average', 'Fluent'];
 
     let body = `
         <div class="student-card-section" style="display:flex;align-items:center;gap:16px;padding:16px;">
@@ -33569,58 +33899,32 @@ function renderStudentCard(student) {
 
         <div class="student-card-section">
             <div class="student-card-section-title">Project & Language</div>
-            <div class="student-card-field">
-                <div class="student-card-field-label">Project</div>
-                <div class="student-card-field-value">${projectBadgeHtml}</div>
-            </div>
-            <div class="student-card-field">
-                <div class="student-card-field-label">Spanish Level</div>
-                <div class="student-card-field-value" style="display:flex;align-items:center;justify-content:space-between;">${spanishBarometer}</div>
-            </div>
+            ${renderStudentCardField('Project', student['Project'] || '', 'select', projectOptions)}
+            ${renderStudentCardField('Spanish Level', student['Spanish Level'] || '', 'select', spanishOptions)}
             ${renderStudentCardField('T-Shirt Size', student['T-Shirt Size'] || '', 'select', ['XS', 'S', 'M', 'L', 'XL', 'XXL'])}
         </div>
 
         <div class="student-card-section">
             <div class="student-card-section-title">Documents</div>
             <div class="student-card-field">
-                <div class="student-card-field-label">Status</div>
-                <div class="student-card-field-value" style="display:block;padding:12px;">${docHtml}</div>
+                <div class="student-card-field-label">Checklist</div>
+                <div class="student-card-field-value" style="display:block;padding:8px 12px;">${docToggles}</div>
             </div>
-            ${student['Waiver Link'] ? `
-            <div class="student-card-field">
-                <div class="student-card-field-label">Waiver Link</div>
-                <div class="student-card-field-value" style="display:block;">
-                    <a href="${escapeHtml(student['Waiver Link'])}" target="_blank" style="color:#3b82f6;text-decoration:underline;">View Liability Waiver</a>
-                </div>
-            </div>
-            ` : ''}
+            ${renderStudentCardField('Waiver Link', student['Waiver Link'] || '', 'text')}
         </div>
 
         <div class="student-card-section">
             <div class="student-card-section-title">Hotel Rooms</div>
-            ${renderStudentCardField('Wyndham Tamarindo (Day 1-2)', roomAssignments['Wyndham Tamarindo'] || '--', 'text', null, true)}
-            ${renderStudentCardField('Reserva Conchal (Day 3-8)', roomAssignments['Reserva Conchal'] || '--', 'text', null, true)}
-            ${renderStudentCardField('Lomas del Volcan (Day 9-10)', roomAssignments['Lomas del Volcan'] || '--', 'text', null, true)}
+            ${renderStudentCardField('Wyndham Tamarindo (Day 1-2)', roomAssignments['Wyndham Tamarindo'] || '', 'text', null, true)}
+            ${renderStudentCardField('Reserva Conchal (Day 3-8)', roomAssignments['Reserva Conchal'] || '', 'text', null, true)}
+            ${renderStudentCardField('Lomas del Volcan (Day 9-10)', roomAssignments['Lomas del Volcan'] || '', 'text', null, true)}
         </div>
 
         <div class="student-card-section">
-            <div class="student-card-section-title">Health &amp; Safety</div>
-            ${(student['Dietary Restrictions'] || student['Food Allergies'] || student['Medical Conditions']) ? `
-            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;padding:0 4px;">
-                ${student['Dietary Restrictions'] ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:12px;font-size:12px;background:#fef3c7;color:#92400e;font-weight:600;">🍽️ ${escapeHtml(student['Dietary Restrictions'])}</span>` : ''}
-                ${student['Food Allergies'] ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:12px;font-size:12px;background:#fee2e2;color:#991b1b;font-weight:600;">⚠️ ${escapeHtml(student['Food Allergies'])}</span>` : ''}
-                ${student['Medical Conditions'] ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:12px;font-size:12px;background:#ede9fe;color:#5b21b6;font-weight:600;">🏥 ${escapeHtml(student['Medical Conditions'])}</span>` : ''}
-            </div>` : '<div style="padding:4px 8px;color:#a1a1aa;font-size:13px;">No dietary, allergy, or medical flags</div>'}
-            ${renderStudentCardField('Dietary Restrictions', student['Dietary Restrictions'] || '', 'text')}
-            ${renderStudentCardField('Food Allergies', student['Food Allergies'] || '', 'text')}
-            ${renderStudentCardField('Medical Conditions', student['Medical Conditions'] || '', 'text')}
-            ${student['Emergency Contact'] ? `
-            <div class="student-card-field">
-                <div class="student-card-field-label">Emergency Contact</div>
-                <div class="student-card-field-value" style="display:block;padding:8px;">
-                    <div style="white-space:pre-line;font-size:13px;line-height:1.5;">${escapeHtml(student['Emergency Contact'])}</div>
-                </div>
-            </div>` : renderStudentCardField('Emergency Contact', '', 'textarea')}
+            <div class="student-card-section-title">Health & Safety</div>
+            ${renderStudentCardField('Food & Allergies', student['Food & Allergies'] || student['Dietary Restrictions'] || student['Food Allergies'] || '', 'textarea')}
+            ${renderStudentCardField('Health & Accessibility', student['Health & Accessibility'] || student['Medical Conditions'] || '', 'textarea')}
+            ${renderStudentCardField('Emergency Contact', student['Emergency Contact'] || '', 'textarea')}
         </div>
 
         <div class="student-card-section">
@@ -33748,7 +34052,7 @@ function saveStudentCard() {
         DATA.accepted[idx][actualKey] = currentStudentData[key];
     });
 
-    _skipNextSnapshot = true;
+    _skipNextSnapshot++;
     saveData();
 
     // Sync admin edits to Firestore student profile (merge: true preserves student's own edits)
@@ -33797,22 +34101,21 @@ const STUDENT_BIOS = [
 {name:"Pia von Sanden",degree:"BA",major:"International Development",role:"🌳",spanishLevel:"B2",country:"UK 🇬🇧",preference:"Beach",animal:"Anteater!!!",sustainabilityInfluence:"The Daily: What Does Sustainable Living Look Like? Maybe Like Uruguay?",song:"Subeme la Radio - Enrique Iglesias",funFact:"My favorite food is an empanada",photo:"photos/pia_sanden.jpg"},
 {name:"Ida McGinley",degree:"Management",major:"Managing for Sustainability & Accounting",role:"🌳",spanishLevel:"A1",country:"USA 🇺🇸",preference:"Beach",animal:"Sloth",sustainabilityInfluence:"The Biggest Little Farm",song:"Titi Me Pregunto - Bad Bunny",funFact:"I love to surf!",photo:"photos/ida_mcginley.jpg"},
 {name:"Jan Przybylo",degree:"BEng",major:"Bioresource Engineering",role:"💻🌳",spanishLevel:"Intermediate",country:"Canada/Poland 🇨🇦🇵🇱",preference:"Rainforest",animal:"Sloth and Tree Frog",sustainabilityInfluence:"Princess Mononoke",song:"LA CANCIÓN",funFact:"I do wildlife photography",photo:"photos/jan_przybylo.jpg"},
-{name:"Lauralie Drouin",degree:"",major:"",role:"🌳",spanishLevel:"",country:"",preference:"",animal:"",sustainabilityInfluence:"",song:"",funFact:"",photo:"photos/lauralie_drouin.jpg"},
-{name:"Léanne Audet",degree:"secondary 3",major:"Want to be a dentist",role:"🌳",spanishLevel:"",country:"Canada 🇨🇦",preference:"Beach",animal:"Sea turtles",sustainabilityInfluence:"Lilo et stitch",song:"Could you be loved",funFact:"I was a competitive dancer for several years.",photo:"photos/leanne_audet.jpg"}
+{name:"Lauralie Drouin",degree:"Secondary 3",major:"I want to be a lawyer",role:"🌳",spanishLevel:"",country:"Canada 🇨🇦",preference:"Beach",animal:"Sloth",sustainabilityInfluence:"Moana",song:"Mr.Brightside",funFact:"I do cheerleading",photo:"photos/lauralie_drouin.jpg"},
+{name:"Leanne Audet",degree:"secondary 3",major:"Want to be a dentist",role:"🌳",spanishLevel:"",country:"Canada 🇨🇦",preference:"Beach",animal:"Sea turtles",sustainabilityInfluence:"Lilo et stitch",song:"Could you be loved",funFact:"I was a competitive dancer for several years.",photo:"photos/leanne_audet.jpg"}
 ];
 
 // ===== AUTH & LOGIN SYSTEM =====
-// WARNING: Credentials below use btoa() (Base64) encoding, which is NOT encryption.
-// Base64 is trivially reversible. This is for convenience only and should NOT be 
-// used in production. Consider using proper authentication (OAuth, SAML, etc.).
-const _ph = 'Ymx1ZWNhdDI0'; // staff password
-const STAFF_CREDENTIALS = [
-    { email: 'juan@mcgill.ca', pw: 'Ymx1ZWNhdDI0' },
-    { email: 'juan.serpa@mcgill.ca', pw: 'Ymx1ZWNhdDI0' },
-    { email: 'ehsia.thanda@mcgill.ca', pw: 'dGhhbmRhMjQ=' },
-    { email: 'juan.rodrigueztorres@mcgill.ca', pw: 'cm9kcmlndWV6MjQ=' },
-    { email: 'noelle.ciravolo@mail.mcgill.ca', pw: 'Y2lyYXZvbG8yNA==' }
+// Staff allowlist (no passwords here — passwords are validated by Firebase Auth).
+// Firestore security rules ALSO enforce this list server-side, so the client copy
+// is purely for "is this email a staff account?" UX checks. Editing this list does
+// NOT grant staff privileges — that's controlled by firestore.rules.
+const STAFF_EMAILS = [
+    'juan@mcgill.ca'
 ];
+// Compatibility shim — some legacy code still references STAFF_CREDENTIALS.
+// It now contains only emails (no passwords); .pw is intentionally undefined.
+const STAFF_CREDENTIALS = STAFF_EMAILS.map(e => ({ email: e }));
 // (variables declared earlier — see main declarations block)
 
 
@@ -33853,19 +34156,28 @@ function showStuError2(msg) {
 }
 
 // Check if email is in accepted students list or staff
+// Permissive: union of live (Firestore-merged) DATA and static DATA_JSON.
+// A student in the deployed code's static list can ALWAYS log in, even if Firestore drops them.
 function isAcceptedEmail(email) {
-    if (!DATA) return false;
-    const emailLower = email.toLowerCase().trim();
-    const inAccepted = (DATA.accepted || []).some(s => (s['Email'] || s['email'] || '').toLowerCase().trim() === emailLower);
-    if (inAccepted) return true;
-    return (DATA.staff || []).some(s => (s['Email'] || s['email'] || '').toLowerCase().trim() === emailLower);
+    const emailLower = (email || '').toLowerCase().trim();
+    if (!emailLower) return false;
+    const matches = s => ((s && (s['Email'] || s['email'])) || '').toLowerCase().trim() === emailLower;
+    const liveAccepted = (DATA && DATA.accepted) || [];
+    const liveStaff = (DATA && DATA.staff) || [];
+    const staticAccepted = (typeof DATA_JSON !== 'undefined' && DATA_JSON.accepted) || [];
+    const staticStaff = (typeof DATA_JSON !== 'undefined' && DATA_JSON.staff) || [];
+    return liveAccepted.some(matches) || staticAccepted.some(matches)
+        || liveStaff.some(matches) || staticStaff.some(matches);
 }
 
-// Get accepted student data by email
+// Get accepted student data by email — falls back to static DATA_JSON if not in live DATA
 function getAcceptedStudentByEmail(email) {
-    if (!DATA || !DATA.accepted) return null;
-    const emailLower = email.toLowerCase().trim();
-    return DATA.accepted.find(s => (s['Email'] || s['email'] || '').toLowerCase().trim() === emailLower) || null;
+    const emailLower = (email || '').toLowerCase().trim();
+    if (!emailLower) return null;
+    const matches = s => ((s && (s['Email'] || s['email'])) || '').toLowerCase().trim() === emailLower;
+    const fromLive = (DATA && DATA.accepted || []).find(matches);
+    if (fromLive) return fromLive;
+    return (typeof DATA_JSON !== 'undefined' && DATA_JSON.accepted || []).find(matches) || null;
 }
 
 function ensureFirebaseAuth() {
@@ -33975,7 +34287,7 @@ async function studentRequestAccess() {
         currentStudentUser = firebaseAuth.currentUser;
 
         // Pre-populate Firestore profile
-        const bio = STUDENT_BIOS.find(b => studentData && studentData['Full Name'] && b.name.toLowerCase() === studentData['Full Name'].toLowerCase());
+        const bio = studentData && findByName(STUDENT_BIOS, studentData['Full Name'], 'name');
         const profileData = {
             email: email,
             name: studentData ? (studentData['Full Name'] || '') : '',
@@ -34054,6 +34366,7 @@ function enterStudentDashboard(email) {
         checkMustChangePassword(email);
     }, 400);
     loadStudentProfile(email);
+    // Render immediately from static data; onSnapshot listener in renderBioCards will re-render with Firestore data
     renderBioCards('');
     renderStudentLogistics();
     listenToStudentProfile(email);
@@ -34085,7 +34398,7 @@ function showChangePasswordModal(email) {
         '<input type="password" id="cpNewPassword" placeholder="New password (min 6 characters)" style="width:100%;padding:12px 16px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;margin-bottom:12px;box-sizing:border-box;" />' +
         '<input type="password" id="cpConfirmPassword" placeholder="Confirm new password" style="width:100%;padding:12px 16px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;margin-bottom:16px;box-sizing:border-box;" />' +
         '<div id="cpError" style="color:#ef4444;font-size:13px;margin-bottom:12px;min-height:18px;"></div>' +
-        '<button onclick="submitChangePassword(\'' + email + '\')" style="width:100%;padding:14px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:all .2s;">Change Password</button>' +
+        '<button onclick="submitChangePassword(\'' + escapeHtml(email).replace(/\x27/g, '&#39;') + '\')" style="width:100%;padding:14px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:all .2s;">Change Password</button>' +
     '</div>';
     document.body.appendChild(overlay);
     setTimeout(function() { document.getElementById('cpNewPassword').focus(); }, 100);
@@ -34195,15 +34508,20 @@ async function loadStudentProfile(email) {
     };
 
     if (d) {
-        // Merge: admin fields override Firestore if admin has a value
+        // Read-only merge: admin's d_accepted values fill in for display when student
+        // profile lacks them. We DO NOT write this merged view back to Firestore —
+        // doing so on every page load was clobbering the student's own recent edits
+        // when admin's data was stale. Admin → student propagation happens through
+        // the `students` collection listener instead.
         for (const [key, val] of Object.entries(adminFields)) {
-            if (val && val !== '') d[key] = val;
+            if (val && val !== '' && (d[key] === undefined || d[key] === null || d[key] === '')) {
+                d[key] = val;
+            }
         }
-        // Sync merged data back to Firestore
-        try { await db.collection('students').doc(email.toLowerCase()).set(d, { merge: true }); } catch(e) {}
     } else {
-        // No Firestore profile — build from accepted list + STUDENT_BIOS
-        const bio = accepted ? STUDENT_BIOS.find(b => b.name && accepted['Full Name'] && b.name.toLowerCase() === accepted['Full Name'].toLowerCase()) : null;
+        // No Firestore profile yet — build a starter from accepted + STUDENT_BIOS.
+        // Persisting this once is OK because the doc didn't exist (nothing to clobber).
+        const bio = accepted ? findByName(STUDENT_BIOS, accepted['Full Name'], 'name') : null;
         d = {
             email: email,
             ...adminFields,
@@ -34213,8 +34531,8 @@ async function loadStudentProfile(email) {
             sustainabilityInfluence: bio ? bio.sustainabilityInfluence : '',
             song: bio ? bio.song : '', funFact: bio ? bio.funFact : ''
         };
-        // Save to Firestore so it persists
-        try { await db.collection('students').doc(email.toLowerCase()).set(d, { merge: true }); } catch(e) {}
+        try { await db.collection('students').doc(email.toLowerCase()).set(d, { merge: true }); }
+        catch(e) { console.error('Failed to seed student profile:', e); }
     }
 
     // Also grab student ID from accepted list if not in Firestore data
@@ -34227,7 +34545,7 @@ async function loadStudentProfile(email) {
     if (projectEl) {
         let project = accepted ? (accepted['Project'] || '') : '';
         if (!project && typeof DATA_JSON !== 'undefined' && DATA_JSON.accepted) {
-            const djRow = DATA_JSON.accepted.find(r => (r['Full Name'] || '').toLowerCase() === (accepted ? (accepted['Full Name'] || '') : '').toLowerCase());
+            const djRow = accepted && findByName(DATA_JSON.accepted, accepted['Full Name'], 'Full Name');
             if (djRow) project = djRow['Project'] || '';
         }
         if (project) {
@@ -34606,6 +34924,7 @@ function listenToStudentProfile(email) {
 let _activeBioProjectFilter = null;
 let _bioPhotosLoaded = false;
 let _firestoreStudentData = null; // cached Firestore student profiles for bio cards
+let _bioCardsListenerUnsub = null; // onSnapshot unsubscribe function
 
 function initProjectFilterButtons() {
     const container = document.getElementById('stuProjectFilters');
@@ -34670,22 +34989,11 @@ function renderBioCards(filter) {
         }) || null;
     }
 
-    // Name aliases: DATA.accepted name → STUDENT_BIOS name
-    const NAME_ALIASES = {
-        'isabella jimenez': 'mia jimenez',
-        'victoire damasse leytes': 'victoire leytes',
-        'sunsunee bell': 'sunny bell',
-        'jacqueline wood': 'jackie wood',
-        'leanne audet': 'léanne audet',
-        'kea anderson': 'kéa anderson'
-    };
-
+    // Uses global NAME_ALIASES + normalizeName so bios/rooms/slothy/etc. all match.
     function findBioByName(name) {
-        const n = name.toLowerCase().trim();
-        const aliased = NAME_ALIASES[n] || n;
-        return STUDENT_BIOS.find(b => b.name.toLowerCase() === aliased) ||
-               STUDENT_BIOS.find(b => b.name.toLowerCase() === n) ||
-               null;
+        const target = normalizeName(name);
+        if (!target) return null;
+        return STUDENT_BIOS.find(b => normalizeName(b.name) === target) || null;
     }
 
     // Build project lookup from DATA_JSON (by name AND email) — authoritative source for assignments
@@ -34705,20 +35013,35 @@ function renderBioCards(filter) {
         ? DATA.accepted
         : (typeof DATA_JSON !== 'undefined' && DATA_JSON.accepted ? DATA_JSON.accepted : []);
 
-    // Build bio entries dynamically from accepted list, enriched with STUDENT_BIOS
-    const allBios = [];
+    // Build bio entries dynamically from accepted list, enriched with STUDENT_BIOS.
+    // Dedupe by email (or aliased name when no email) so duplicate accepted-rows
+    // — e.g. one in Firestore with no project, one in static with a project —
+    // collapse into a single card. Prefer the entry with project data.
+    const bioByKey = new Map();
     const usedBioNames = new Set();
+    function dedupKey(email, name) {
+        // Key by normalized name only — handles aliases, accent variants,
+        // and case differences. One person ⇒ one card, regardless of source.
+        return normalizeName(name);
+    }
+    function mergePreferringFilled(prev, next) {
+        // prev wins when it has the field; next fills blanks. Project: prefer non-empty.
+        const out = { ...prev };
+        for (const k of Object.keys(next)) {
+            if (out[k] === undefined || out[k] === null || out[k] === '') out[k] = next[k];
+        }
+        if (!prev.project && next.project) out.project = next.project;
+        return out;
+    }
     sourceAccepted.forEach(row => {
         const name = (row['Full Name'] || row['Name'] || '').trim();
         if (!name) return;
         const bio = findBioByName(name);
         if (bio) usedBioNames.add(bio.name.toLowerCase());
-        // Project: prefer row data, fallback to DATA_JSON by name or email
         const email = (row['Email'] || '').toLowerCase().trim();
         const project = row['Project'] || _djProjectByName[name.toLowerCase()] || _djProjectByEmail[email] || '';
-        // Firestore student profile overrides (if fetched)
         const fs = _firestoreStudentData && _firestoreStudentData[email];
-        allBios.push({
+        const entry = {
             name: (fs && fs.name) || (bio ? bio.name : name),
             email: email,
             degree: (fs && fs.degree) || (bio ? bio.degree : (row['Degree'] || '')),
@@ -34733,14 +35056,18 @@ function renderBioCards(filter) {
             photo: (fs && fs.photoBase64) || (bio ? bio.photo : ''),
             spanishLevel: (fs && fs.spanishLevel) || (bio ? bio.spanishLevel : ''),
             project: project
-        });
+        };
+        const key = dedupKey(email, entry.name);
+        bioByKey.set(key, bioByKey.has(key) ? mergePreferringFilled(bioByKey.get(key), entry) : entry);
     });
     // Add any STUDENT_BIOS entries not matched to DATA.accepted
     STUDENT_BIOS.forEach(bio => {
-        if (!usedBioNames.has(bio.name.toLowerCase())) {
-            allBios.push({ ...bio, project: '' });
-        }
+        const lname = bio.name.toLowerCase();
+        if (usedBioNames.has(lname)) return;
+        const key = dedupKey('', bio.name);
+        if (!bioByKey.has(key)) bioByKey.set(key, { ...bio, email: '', project: '' });
     });
+    const allBios = Array.from(bioByKey.values());
 
     // Filter
     const filteredBios = allBios.filter(b => {
@@ -34876,15 +35203,24 @@ function renderBioCards(filter) {
     // Initialize filter buttons if not done
     if (!document.querySelector('.stu-project-filter-btn')) initProjectFilterButtons();
 
-    // Background: fetch Firestore student profiles and re-render with updated data (non-blocking)
+    // Real-time listener: keep bio cards in sync with Firestore student profiles.
+    // Tear down any existing subscription first — repeated renders were stacking
+    // listeners (each fired on every snapshot, leaking memory and triggering
+    // duplicate renders).
     if (db && !_bioPhotosLoaded) {
         _bioPhotosLoaded = true;
-        db.collection('students').get().then(snapshot => {
-            _firestoreStudentData = {};
-            snapshot.forEach(doc => { _firestoreStudentData[doc.id] = doc.data(); });
-            // Re-render cards now that Firestore data is cached
-            renderBioCards(filter);
-        }).catch(() => {});
+        if (typeof _bioCardsListenerUnsub === 'function') { try { _bioCardsListenerUnsub(); } catch(e) {} }
+        _bioCardsListenerUnsub = db.collection('students').onSnapshot(snapshot => {
+            _firestoreStudentData = _firestoreStudentData || {};
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'removed') {
+                    delete _firestoreStudentData[change.doc.id];
+                } else {
+                    _firestoreStudentData[change.doc.id] = change.doc.data();
+                }
+            });
+            renderBioCards(_activeBioProjectFilter || '');
+        }, () => {});
     }
 }
 
@@ -34988,6 +35324,9 @@ function renderStudentLogistics() {
     };
     function getTypeStyle(type) { return typeStyles[type] || { color: '#64748b', bg: '#f8fafc', border: '#e2e8f0' }; }
 
+    // Unique animation id for this render pass
+    const _animId = 'stula' + Date.now();
+
     // ── Countdown hero ──
     let heroHtml = '';
     if (daysUntil > 0) {
@@ -35016,22 +35355,24 @@ function renderStudentLogistics() {
     }
 
     // ── Day selector strip ──
-    let dayStripHtml = '<div style="display:flex;gap:6px;overflow-x:auto;padding:2px 0 16px;-webkit-overflow-scrolling:touch;scrollbar-width:none;" class="stu-schedule-strip">';
+    const monthAbbrs = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    let dayStripHtml = '<div style="display:flex;gap:5px;overflow-x:auto;padding:2px 0 16px;-webkit-overflow-scrolling:touch;scrollbar-width:none;" class="stu-schedule-strip">';
     sortedDates.forEach((date, idx) => {
         const events = eventsByDate[date];
         const dayName = events[0].day || '';
         const accommodation = events[0].accommodation || '';
         const dateObj = _parseScheduleDate(date);
         const dayNum = !isNaN(dateObj) ? dateObj.getDate() : '?';
+        const monthAbbr = !isNaN(dateObj) ? monthAbbrs[dateObj.getMonth()] : '';
         const dayAbbr = dayName.substring(0, 3);
         const activeClass = idx === 0 ? 'stu-day-active' : '';
         const style = typeof getAccomStyleFor === 'function' ? getAccomStyleFor(accommodation, accomStyle) : { emoji: '📍', color: '#3b82f6', bg: '#eff6ff' };
-        dayStripHtml += `<div class="stu-day-card ${activeClass}" onclick="switchStudentLogisticsDay('${date}')" data-date="${date}" style="--accent:${style.color};--accent-bg:${style.bg};min-width:72px;padding:10px 8px;">
-            <div style="font-size:1.1rem;margin-bottom:2px;">${style.emoji}</div>
-            <div style="font-size:.6rem;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;font-weight:600;margin-bottom:2px;">Day ${idx + 1}</div>
-            <div class="stu-day-num" style="font-size:1.4rem;font-weight:800;line-height:1.2;">${dayNum}</div>
-            <div style="font-size:.68rem;font-weight:600;color:#64748b;">${dayAbbr}</div>
-            <div style="font-size:.55rem;color:${style.color};font-weight:700;margin-top:3px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70px;">${style.short || ''}</div>
+        dayStripHtml += `<div class="stu-day-card ${activeClass}" onclick="switchStudentLogisticsDay('${date}')" data-date="${date}" style="--accent:${style.color};--accent-bg:${style.bg};min-width:62px;max-width:68px;padding:8px 6px;position:relative;">
+            <div style="font-size:.55rem;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;font-weight:700;margin-bottom:1px;">${monthAbbr}</div>
+            <div class="stu-day-num" style="font-size:1.5rem;font-weight:900;line-height:1.1;">${dayNum}</div>
+            <div style="font-size:.62rem;font-weight:600;color:#64748b;margin-bottom:2px;">${dayAbbr}</div>
+            <div style="font-size:.5rem;color:${style.color};font-weight:700;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60px;">${style.short || ''}</div>
+            <div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:3px;border-radius:2px;background:linear-gradient(90deg,${style.color},${style.color}88);transition:width .25s ease;"></div>
         </div>`;
     });
     dayStripHtml += '</div>';
@@ -35045,23 +35386,29 @@ function renderStudentLogistics() {
         const dayName = events[0].day || '';
         const dateObj = _parseScheduleDate(date);
         const dateFormatted = !isNaN(dateObj) ? dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : date;
-        let dayHtml = `<div class="timeline-view ${activeClass}" data-date="${date}">`;
+        let dayHtml = `<div class="timeline-view ${activeClass}" data-date="${date}" style="animation:${_animId}_fadeIn .35s ease both;">`;
 
-        // Day header with date and accommodation
-        dayHtml += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
-            <div>
-                <div style="font-size:1.15rem;font-weight:800;color:#1e293b;">Day ${idx + 1} — ${dateFormatted}</div>
-                <div style="font-size:.78rem;color:#94a3b8;margin-top:2px;">${events.length} activit${events.length === 1 ? 'y' : 'ies'} planned</div>
-            </div>`;
+        // Day header with date and accommodation - page style
+        dayHtml += `<div style="margin-bottom:18px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:14px;">
+                <div>
+                    <div style="font-size:1.2rem;font-weight:800;color:#1e293b;letter-spacing:-.01em;">Day ${idx + 1} — ${dateFormatted}</div>
+                    <div style="font-size:.78rem;color:#94a3b8;margin-top:2px;">${events.length} activit${events.length === 1 ? 'y' : 'ies'} planned</div>
+                </div>`;
 
         if (accommodation) {
             const aStyle = typeof getAccomStyleFor === 'function' ? getAccomStyleFor(accommodation, accomStyle) : { emoji: '🏨', bg: '#eff6ff', color: '#3b82f6' };
-            dayHtml += `<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;background:${aStyle.bg};border-radius:20px;border:1px solid ${aStyle.color}30;flex-shrink:0;">
-                <span style="font-size:1rem;">${aStyle.emoji}</span>
-                <span style="font-size:.78rem;font-weight:600;color:${aStyle.color};">${escapeHtml(accommodation)}</span>
+            dayHtml += `<div style="display:inline-flex;align-items:center;gap:10px;padding:8px 16px;background:${aStyle.bg};border-radius:22px;border:1.5px solid ${aStyle.color}35;flex-shrink:0;box-shadow:0 2px 8px ${aStyle.color}15;">
+                <span style="font-size:1.4rem;display:inline-block;animation:${_animId}_pulse 2s ease-in-out infinite;">${aStyle.emoji}</span>
+                <div style="display:flex;flex-direction:column;">
+                    <span style="font-size:.58rem;text-transform:uppercase;letter-spacing:.6px;color:${aStyle.color}99;font-weight:700;line-height:1;">Tonight</span>
+                    <span style="font-size:.82rem;font-weight:700;color:${aStyle.color};line-height:1.3;">${escapeHtml(accommodation)}</span>
+                </div>
             </div>`;
         }
-        dayHtml += '</div>';
+        dayHtml += `</div>
+            <div style="height:2px;background:linear-gradient(90deg,#e2e8f0,#f1f5f9 50%,transparent);border-radius:1px;"></div>
+        </div>`;
 
         // Per-day note to students
         const dayNote = ((logistics.dayNotes || {})[date] || '').trim();
@@ -35088,22 +35435,19 @@ function renderStudentLogistics() {
             const ts = getTypeStyle(evt.type);
             const isLast = i === sortedEvents.length - 1;
             const timeLabel = (evt.startTime && evt.endTime) ? `${evt.startTime} – ${evt.endTime}` : (evt.startTime || '');
+            const cardDelay = (i * 0.06).toFixed(2);
 
-            dayHtml += `<div style="display:flex;gap:12px;margin-bottom:${isLast ? '0' : '2px'};">
+            dayHtml += `<div style="display:flex;gap:12px;margin-bottom:${isLast ? '0' : '6px'};animation:${_animId}_fadeIn .35s ease both;animation-delay:${cardDelay}s;">
                 <!-- Timeline spine -->
                 <div style="display:flex;flex-direction:column;align-items:center;min-width:44px;">
                     <div style="width:38px;height:38px;border-radius:12px;background:${ts.bg};border:1.5px solid ${ts.border};display:flex;align-items:center;justify-content:center;font-size:1.05rem;flex-shrink:0;transition:transform .2s;" onmouseenter="this.style.transform='scale(1.1)'" onmouseleave="this.style.transform='scale(1)'">${typeIcon}</div>
                     ${!isLast ? `<div style="width:2px;flex:1;background:linear-gradient(to bottom,${ts.border},#e2e8f0);margin:4px 0;min-height:12px;"></div>` : ''}
                 </div>
                 <!-- Event card -->
-                <div style="flex:1;background:#fff;border-radius:14px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.04);border:1.5px solid #f1f5f9;transition:all .2s;" onmouseenter="this.style.borderColor='${ts.border}';this.style.boxShadow='0 4px 12px rgba(0,0,0,.07)'" onmouseleave="this.style.borderColor='#f1f5f9';this.style.boxShadow='0 1px 4px rgba(0,0,0,.04)'">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px;">
-                        <div style="flex:1;">
-                            <div style="font-weight:700;font-size:1.05rem;color:#1e293b;line-height:1.3;">${escapeHtml(evt.description).replace(/\\n/g, '<br>').replace(/\n/g, '<br>')}</div>
-                            ${evt.location ? `<div style="font-size:.8rem;color:#64748b;margin-top:3px;display:flex;align-items:center;gap:5px;"><i class="fas fa-map-pin" style="font-size:9px;color:#94a3b8;"></i>${escapeHtml(evt.location)}</div>` : ''}
-                        </div>
-                        ${timeLabel ? `<div style="font-size:.72rem;font-weight:700;color:${ts.color};background:${ts.bg};padding:4px 10px;border-radius:8px;white-space:nowrap;border:1px solid ${ts.border};letter-spacing:.2px;">${escapeHtml(timeLabel)}</div>` : ''}
-                    </div>
+                <div style="flex:1;background:#fff;border-radius:14px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.04);border:1.5px solid #f1f5f9;border-left:3.5px solid ${ts.color};transition:all .2s;" onmouseenter="this.style.borderColor='${ts.border}';this.style.borderLeftColor='${ts.color}';this.style.boxShadow='0 4px 16px rgba(0,0,0,.07)';this.style.background='linear-gradient(135deg,#fff,${ts.bg}44)'" onmouseleave="this.style.borderColor='#f1f5f9';this.style.borderLeftColor='${ts.color}';this.style.boxShadow='0 1px 4px rgba(0,0,0,.04)';this.style.background='#fff'">
+                    ${timeLabel ? `<div style="font-size:.72rem;font-weight:700;color:${ts.color};background:${ts.bg};padding:3px 10px;border-radius:6px;white-space:nowrap;display:inline-block;border:1px solid ${ts.border};letter-spacing:.3px;margin-bottom:8px;">${escapeHtml(timeLabel)}</div>` : ''}
+                    <div style="font-weight:700;font-size:1.05rem;color:#1e293b;line-height:1.3;">${escapeHtml(evt.description).replace(/\\n/g, '<br>').replace(/\n/g, '<br>')}</div>
+                    ${evt.location ? `<div style="font-size:.8rem;color:#64748b;margin-top:4px;display:flex;align-items:center;gap:5px;"><i class="fas fa-map-pin" style="font-size:9px;color:#94a3b8;"></i>${escapeHtml(evt.location)}</div>` : ''}
                     ${evt.studentNote ? `<div style="background:linear-gradient(135deg,#fef9c3,#fef3c7);border-left:4px solid #f59e0b;border-radius:0 10px 10px 0;padding:10px 14px;margin-top:10px;font-size:.88rem;color:#78350f;line-height:1.5;font-weight:500;box-shadow:0 1px 4px rgba(245,158,11,.1);"><i class="fas fa-bullhorn" style="font-size:10px;color:#f59e0b;margin-right:6px;"></i>${escapeHtml(evt.studentNote)}</div>` : ''}
                 </div>
             </div>`;
@@ -35137,6 +35481,11 @@ function renderStudentLogistics() {
     }
 
     container.innerHTML = `
+        <style>
+            @keyframes ${_animId}_fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+            @keyframes ${_animId}_pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.12); } }
+            #stuLogisticsContent .stu-day-card.stu-day-active > div:last-child { width:70% !important; }
+        </style>
         <div style="max-width:100%;">
             ${heroHtml}
             ${studentNoteHtml}
@@ -35168,6 +35517,10 @@ function studentLogout() {
     if (typeof firestoreUnsubscribe === 'function') firestoreUnsubscribe();
     if (typeof _studentsCollectionUnsub === 'function') _studentsCollectionUnsub();
     if (typeof _studentProfileUnsub === 'function') _studentProfileUnsub();
+    if (typeof _bioCardsListenerUnsub === 'function') _bioCardsListenerUnsub();
+    _bioPhotosLoaded = false;
+    _firestoreStudentData = null;
+    _bioCardsListenerUnsub = null;
     if (firebaseAuth) firebaseAuth.signOut();
     currentStudentUser = null;
     sessionStorage.removeItem('crTrip_auth');
@@ -35251,39 +35604,67 @@ async function adminResetPassword(email) {
     }
 }
 
-// Staff login — checks email + password against staff credentials
-function attemptLogin() {
+// Staff login — authenticates against Firebase Auth (real password check, server-side).
+// The Firestore security rules ALSO check the email against the staff allowlist, so a
+// student account simply lacking the staff email won't be able to write hub data even
+// if they bypass this client-side check.
+function showLoginError(msg) {
+    const err = document.getElementById('loginError');
+    err.style.opacity = '1';
+    err.textContent = msg;
+    const pwEl = document.getElementById('loginPassword');
+    if (pwEl) pwEl.style.borderColor = '#f87171';
+    setTimeout(() => {
+        err.style.opacity = '0';
+        if (pwEl) pwEl.style.borderColor = 'rgba(255,255,255,0.2)';
+    }, 4000);
+}
+async function attemptLogin() {
     const emailInput = (document.getElementById('staffEmail').value || '').toLowerCase().trim();
     const pwInput = document.getElementById('loginPassword').value;
-    const pwHash = btoa(pwInput);
-
-    if (!emailInput || !pwHash) {
-        document.getElementById('loginError').style.opacity = '1';
-        document.getElementById('loginError').textContent = 'Please enter both email and password';
+    if (!emailInput || !pwInput) {
+        showLoginError('Please enter both email and password');
         return;
     }
-    const isStaff = STAFF_CREDENTIALS.some(c => (c.email || '').toLowerCase() === emailInput && (c.pw || '') === pwHash);
-
-    if (isStaff) {
-        document.getElementById('loginOverlay').style.opacity = '0';
-        document.getElementById('loginOverlay').style.transition = 'opacity 0.4s ease';
-        setTimeout(() => {
-            document.getElementById('loginOverlay').style.display = 'none';
-            document.getElementById('sidebar').style.display = '';
-            document.querySelector('.main-content').style.display = '';
-            document.getElementById('studentDashboard').style.display = 'none';
-        }, 400);
-        sessionStorage.setItem('crTrip_auth', 'true');
-        sessionStorage.setItem('crTrip_sessionTime', new Date().getTime().toString());
-        sessionStorage.setItem('crTrip_role', 'admin');
-        // Pre-render student bio cards so staff can switch to student view
-        renderBioCards('');
-    } else {
-        const err = document.getElementById('loginError');
-        err.style.opacity = '1';
-        err.textContent = 'Invalid email or password';
-        document.getElementById('loginPassword').style.borderColor = '#f87171';
-        setTimeout(() => { err.style.opacity = '0'; document.getElementById('loginPassword').style.borderColor = 'rgba(255,255,255,0.2)'; }, 2000);
+    if (!STAFF_EMAILS.includes(emailInput)) {
+        showLoginError('This email is not a staff account.');
+        return;
+    }
+    ensureFirebaseAuth();
+    if (!firebaseAuth) {
+        showLoginError('Authentication service unavailable. Try again in a moment.');
+        return;
+    }
+    try {
+        await firebaseAuth.signInWithEmailAndPassword(emailInput, pwInput);
+    } catch (e) {
+        if (e && (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential' || e.code === 'auth/user-not-found')) {
+            showLoginError('Wrong password. Use "Forgot password?" to reset.');
+        } else if (e && e.code === 'auth/too-many-requests') {
+            showLoginError('Too many failed attempts. Wait a few minutes and try again.');
+        } else {
+            showLoginError((e && e.message) || 'Login failed.');
+        }
+        return;
+    }
+    sessionStorage.setItem('crTrip_auth', 'true');
+    sessionStorage.setItem('crTrip_sessionTime', new Date().getTime().toString());
+    sessionStorage.setItem('crTrip_role', 'admin');
+    // Reload so the data listeners re-subscribe under the authenticated identity.
+    // Without this, the listeners that started pre-auth keep their permission-denied
+    // state and admin sees an empty UI.
+    window.location.reload();
+}
+async function staffForgotPassword() {
+    const emailInput = (document.getElementById('staffEmail').value || '').toLowerCase().trim();
+    if (!emailInput) { showLoginError('Enter your staff email first.'); return; }
+    if (!STAFF_EMAILS.includes(emailInput)) { showLoginError('Not a staff account.'); return; }
+    ensureFirebaseAuth();
+    try {
+        await firebaseAuth.sendPasswordResetEmail(emailInput);
+        showLoginError('Password reset link sent to ' + emailInput + '.');
+    } catch (e) {
+        showLoginError((e && e.message) || 'Could not send reset email.');
     }
 }
 
@@ -35299,20 +35680,29 @@ function renderFlightsDashboard() {
     // Try to pull from the live students data if available
     const allStudents = (DATA && DATA.accepted) ? DATA.accepted : [];
 
-    // We need to fetch flight data from Firestore students collection
-    if (!db) {
+    // Use cached Firestore data if available, otherwise fetch
+    if (!_firestoreStudentData && db) {
+        db.collection('students').get().then(snapshot => {
+            _firestoreStudentData = {};
+            snapshot.forEach(doc => { _firestoreStudentData[doc.id] = doc.data(); });
+            renderFlightsDashboard(); // re-call with cache
+        }).catch(() => {
+            container.innerHTML = '<p style="color:#94a3b8;">Flight data unavailable.</p>';
+        });
+        return;
+    }
+    if (!_firestoreStudentData) {
         container.innerHTML = '<p style="color:#94a3b8;">Flight data unavailable — database not connected.</p>';
         return;
     }
 
-    db.collection('students').get().then(snapshot => {
+    {
         const studentFlights = [];
-        snapshot.forEach(doc => {
-            const d = doc.data();
+        Object.entries(_firestoreStudentData).forEach(([docId, d]) => {
             if (!d.name && !d.email) return;
             const name = d.name || d.email || 'Unknown';
             // Find their photo from DATA.accepted or students collection
-            const accepted = allStudents.find(r => (r['Email'] || '').toLowerCase() === doc.id.toLowerCase());
+            const accepted = findByEmail(allStudents, docId);
             const photoFile = accepted ? (accepted['Photo File'] || '') : '';
             const photoUrl = photoFile ? 'photos/' + photoFile : '';
             const photoBase64 = d.photoBase64 || '';
@@ -35413,20 +35803,31 @@ function renderFlightsDashboard() {
         let html = buildFlightTable(outbound, 'Outbound Flights — To Costa Rica', 'fa-plane-departure');
         html += buildFlightTable(returnF, 'Return Flights — From Costa Rica', 'fa-plane-arrival');
 
-        // Add summary: who hasn't added flights yet
-        const studentsWithFlights = new Set();
-        studentFlights.forEach(f => studentsWithFlights.add(f.name));
-        const missing = allStudents.filter(s => !studentsWithFlights.has(s['Full Name'] || s['Name'] || '')).map(s => s['Full Name'] || s['Name'] || '');
+        // Add summary: who hasn't added flights yet.
+        // Match by normalized name AND by email — Firestore profiles can be keyed by
+        // either, and a name like "Léanne" vs "Leanne" must not split into two people.
+        const haveFlightNames = new Set();
+        const haveFlightEmails = new Set();
+        Object.entries(_firestoreStudentData).forEach(([docId, d]) => {
+            if (d.flightOutDate || d.flightOutAirline || d.flightRetDate || d.flightRetAirline) {
+                if (d.name) haveFlightNames.add(normalizeName(d.name));
+                if (docId) haveFlightEmails.add(normalizeEmail(docId));
+                if (d.email) haveFlightEmails.add(normalizeEmail(d.email));
+            }
+        });
+        const missing = allStudents.filter(s => {
+            const nk = normalizeName(s['Full Name'] || s['Name']);
+            const ek = normalizeEmail(s['Email']);
+            const has = (nk && haveFlightNames.has(nk)) || (ek && haveFlightEmails.has(ek));
+            return !has;
+        }).map(s => s['Full Name'] || s['Name'] || '');
         if (missing.length > 0) {
             html += '<div style="margin-top:1rem;padding:12px 16px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;font-size:.82rem;color:#92400e;">' +
                 '<b>Still waiting on:</b> ' + missing.map(n => escapeHtml(n)).join(', ') + '</div>';
         }
 
         container.innerHTML = html;
-    }).catch(err => {
-        console.error('Error loading flights:', err);
-        container.innerHTML = '<p style="color:#ef4444;">Error loading flight data. Please try again.</p>';
-    });
+    }
 }
 
 function clearFlightFields(direction) {
@@ -35562,6 +35963,9 @@ function staffLogout() {
     if (typeof firestoreUnsubscribe === 'function') firestoreUnsubscribe();
     if (typeof _studentsCollectionUnsub === 'function') _studentsCollectionUnsub();
     if (typeof _studentProfileUnsub === 'function') _studentProfileUnsub();
+    // Sign out of Firebase Auth too — otherwise rules would still treat us as
+    // authenticated staff on the next page load.
+    if (firebaseAuth) { try { firebaseAuth.signOut(); } catch(e) {} }
     sessionStorage.removeItem('crTrip_auth');
     sessionStorage.removeItem('crTrip_role');
     document.getElementById('sidebar').style.display = 'none';
@@ -35614,7 +36018,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('sidebar').style.display = 'none';
         document.querySelector('.main-content').style.display = 'none';
         document.getElementById('studentDashboard').style.display = 'none';
-        setTimeout(() => document.getElementById('loginPassword').focus(), 100);
+        // If accessed via /admin or /staff, show staff login by default
+        if (window.location.pathname === '/admin' || window.location.pathname === '/staff') {
+            switchLoginMode('staff');
+        }
+        setTimeout(() => document.getElementById(window.location.pathname === '/admin' || window.location.pathname === '/staff' ? 'staffEmail' : 'loginPassword').focus(), 100);
     }
 
     // Always start with sidebar expanded
@@ -35792,7 +36200,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const maxOrder = DATA.nextSteps.reduce((m, s) => Math.max(m, s.order || 0), 0);
             DATA.nextSteps.push({ id: maxId + 1, title, deadline, description, steps, links, order: maxOrder + 1 });
         }
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderNextSteps();
         const modal = document.getElementById('nextStepModal');
@@ -35805,6 +36213,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     function deleteNextStep(id) {
         if (!confirm('Delete this step?')) return;
         DATA.nextSteps = (DATA.nextSteps || []).filter(s => s.id !== id);
+        _skipNextSnapshot++;
         saveData();
         renderNextSteps();
         showToast('Step deleted', 'info');
@@ -35819,7 +36228,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         const tempOrder = steps[idx].order;
         steps[idx].order = steps[swapIdx].order;
         steps[swapIdx].order = tempOrder;
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderNextSteps();
     }
@@ -35930,7 +36339,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const maxOrder = DATA.faq.reduce((m, f) => Math.max(m, f.order || 0), 0);
             DATA.faq.push({ id: maxId + 1, question, answer, category, order: maxOrder + 1 });
         }
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderFaqAdmin();
         const modal = document.getElementById('faqModal');
@@ -35943,7 +36352,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     function deleteFaq(id) {
         if (!confirm('Delete this FAQ?')) return;
         DATA.faq = (DATA.faq || []).filter(f => f.id !== id);
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderFaqAdmin();
         showToast('FAQ deleted', 'info');
@@ -36054,7 +36463,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     function addStaffMember() {
         if (!DATA.staff) DATA.staff = [];
         DATA.staff.push({ 'Full Name': 'New Staff', 'Email': '', 'Role': 'TA', 'Country': '', 'Passport': '', 'DoB': '', 'Emergency Contact': '', 'Emergency Phone': '' });
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderStaff();
         showToast('Staff member added — click to edit name and role', 'success');
@@ -36065,7 +36474,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (!staff[idx]) return;
         if (!confirm('Remove ' + (staff[idx]['Full Name'] || 'this staff member') + '?')) return;
         staff.splice(idx, 1);
-        _skipNextSnapshot = true;
+        _skipNextSnapshot++;
         saveData();
         renderStaff();
         showToast('Staff member removed', 'info');
@@ -36108,7 +36517,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                         e.stopPropagation();
                         optionClicked = true;
                         DATA.staff[idx][field] = c;
-                        _skipNextSnapshot = true;
+                        _skipNextSnapshot++;
                         saveData();
                         renderStaff();
                     };
@@ -36133,7 +36542,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                     } else {
                         DATA.staff[idx][field] = searchInput.value;
                     }
-                    _skipNextSnapshot = true;
+                    _skipNextSnapshot++;
                     saveData();
                     renderStaff();
                 }
@@ -36144,7 +36553,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                 if (optionClicked) return;
                 blurTimeout = setTimeout(() => {
                     DATA.staff[idx][field] = searchInput.value;
-                    _skipNextSnapshot = true;
+                    _skipNextSnapshot++;
                     saveData();
                     renderStaff();
                 }, 200);
@@ -36184,7 +36593,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         input.onblur = () => {
             const newValue = input.value;
             DATA.staff[idx][field] = newValue;
-            _skipNextSnapshot = true;
+            _skipNextSnapshot++;
             saveData();
             renderStaff();
         };
@@ -36325,7 +36734,7 @@ window.addEventListener('DOMContentLoaded', async () => {
                 staff[_staffPhotoIdx]['PhotoRaw'] = _staffPhotoRaw;
                 staff[_staffPhotoIdx]['PhotoPosY'] = posY;
             }
-            _skipNextSnapshot = true;
+            _skipNextSnapshot++;
             saveData();
             renderStaff();
 
